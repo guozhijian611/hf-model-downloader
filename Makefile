@@ -97,7 +97,7 @@ dmg: build ## Create DMG package (macOS only)
 ##@ Release
 .PHONY: release-dry-run
 release-dry-run: ## Preview the next release version
-	@semantic-release version --print
+	@$(UV) run semantic-release version --print
 
 .PHONY: release
 release: ## Execute semantic release (main branch only)
@@ -105,8 +105,8 @@ release: ## Execute semantic release (main branch only)
 		echo "❌ Release can only be executed on main branch" >&2; \
 		exit 1; \
 	fi
-	@semantic-release version
-	@semantic-release publish
+	@$(UV) run semantic-release version
+	@$(UV) run semantic-release publish
 
 .DEFAULT_GOAL := help
 
