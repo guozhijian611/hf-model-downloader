@@ -35,13 +35,14 @@ Download from [releases](https://github.com/samzong/hf-model-downloader/releases
 
 ## Development
 
+Requires [uv](https://docs.astral.sh/uv/).
+
 ```bash
 git clone https://github.com/samzong/hf-model-downloader.git
 cd hf-model-downloader
 
-# Modern way (recommended)
-uv sync
-uv run main.py
+uv sync          # install deps (includes huggingface-hub[hf_xet])
+uv run main.py   # run the app
 ```
 
 ## Build
@@ -60,17 +61,12 @@ make clean
 ## Code Quality
 
 ```bash
-# Format code
-make format
-
-# Check code quality
-make lint
-
-# Auto-fix issues
-make lint-fix
-
-# Run format + lint + build
-make check
+make format      # format code
+make lint        # check code quality
+make lint-fix    # auto-fix issues
+make test        # fast smoke tests (Xet availability)
+make test-e2e    # full download tests (network required)
+make check       # format + lint + test + build
 ```
 
 ## Release

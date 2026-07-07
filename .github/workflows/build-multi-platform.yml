@@ -32,13 +32,17 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT || secrets.GH_TOKEN || github.token }}
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
+          enable-cache: true
           python-version: "3.13"
 
       - name: Install dependencies
         run: make install
+
+      - name: Run smoke tests
+        run: make test
 
       - name: Build DMG (ARM64)
         run: |
@@ -72,13 +76,17 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT || secrets.GH_TOKEN || github.token }}
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
+          enable-cache: true
           python-version: "3.13"
 
       - name: Install dependencies
         run: make install
+
+      - name: Run smoke tests
+        run: make test
 
       - name: Build DMG (x86_64)
         run: |
@@ -112,9 +120,10 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GH_PAT || secrets.GH_TOKEN || github.token }}
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
+          enable-cache: true
           python-version: "3.13"
 
       - name: Setup make for Windows
@@ -123,6 +132,9 @@ jobs:
         
       - name: Install dependencies
         run: make install
+
+      - name: Run smoke tests
+        run: make test
 
       - name: Build Windows Executable
         run: |

@@ -2,7 +2,7 @@
 
 # === Configuration Variables ===
 UV := uv
-PYTHON := $(shell if command -v uv >/dev/null 2>&1; then echo "uv run"; else echo "python"; fi)
+PYTHON := $(UV) run
 APP_NAME := hf-model-downloader
 ARCH_NAME := $(shell uname -m)
 VERSION := $(shell grep '^version = ' pyproject.toml | cut -d'"' -f2)
@@ -23,35 +23,36 @@ help: ## Show this help message
 
 ##@ Development
 .PHONY: install
-install: ## Install all dependencies
-	@if command -v uv >/dev/null 2>&1; then \
-		echo "Installing Python dependencies with uv..."; \
-		$(UV) sync; \
-	else \
-		echo "uv not found, falling back to pip..."; \
-		echo "Installing runtime dependencies..."; \
-		pip install -r requirements.txt; \
-		echo "Installing dev dependencies..."; \
-		pip install -r requirements-dev.txt; \
-	fi
+install: ## Install all dependencies with uv
+	@command -v $(UV) >/dev/null 2>&1 || { echo "❌ uv is required. Install from https://docs.astral.sh/uv/" >&2; exit 1; }
+	@echo "Installing Python dependencies with uv..."
+	@$(UV) sync
 	@echo "✅ Dependencies installed successfully"
 
-.PHONY: format lint lint-fix
-format: ## Apply code formatting fixes
+.PHONY: format lint lint-fix test
+format: install ## Apply code formatting fixes
 	@echo "Applying code formatting fixes..."
-	@ruff format .
+	@$(UV) run ruff format .
 
-lint: ## Check code quality and style issues with ruff
+lint: install ## Check code quality and style issues with ruff
 	@echo "Running ruff code quality checks..."
-	@ruff check .
+	@$(UV) run ruff check .
 
-lint-fix: ## Auto-fix code issues where possible
+lint-fix: install ## Auto-fix code issues where possible
 	@echo "Auto-fixing code issues..."
-	@ruff check --fix .
+	@$(UV) run ruff check --fix .
 	@echo "✅ Auto-fixes applied"
 
+test: install ## Run tests (fast smoke tests by default)
+	@echo "Running tests..."
+	@$(UV) run pytest tests/test_hf_xet.py tests/test_hf_hub_env.py tests/test_hf_repo_type.py tests/test_download_process.py -v
+
+test-e2e: install ## Run full end-to-end download tests (network required)
+	@echo "Running end-to-end tests..."
+	@$(UV) run pytest tests/test_e2e_basic.py -v
+
 .PHONY: check
-check: format lint build ## auto run format,lint,build
+check: format lint test build ## Run format, lint, smoke tests, and build
 
 .PHONY: clean
 clean: ## Clean build artifacts
@@ -60,19 +61,19 @@ clean: ## Clean build artifacts
 	@echo "✅ Build artifacts cleaned"
 
 .PHONY: dev
-dev: ## Run the application in development mode
+dev: install ## Run the application in development mode
 	@echo "Starting application in development mode..."
 	@$(PYTHON) main.py
 
 ##@ Build
 .PHONY: build
-build: ## Build the application
+build: install ## Build the application
 	@echo "Building $(APP_NAME) v$(VERSION) for $(ARCH_NAME)..."
 	@$(PYTHON) build.py
 	@echo "✅ Build completed: $(DIST_DIR)"
 
 .PHONY: dmg
-dmg: build ## Create DMG package (macOS only)
+dmg: install build ## Create DMG package (macOS only)
 	@if [ "$(shell uname)" != "Darwin" ]; then \
 		echo "❌ DMG creation is only supported on macOS" >&2; \
 		exit 1; \
@@ -88,7 +89,7 @@ dmg: build ## Create DMG package (macOS only)
 			echo "Processing $$app_dir..."; \
 			mv "$$app_dir" "HF Model Downloader.app"; \
 			cp ../dmg_settings.py settings.py; \
-			dmgbuild -s settings.py "HF Model Downloader" "$(APP_NAME)-$(ARCH_NAME).dmg"; \
+			$(UV) run dmgbuild -s settings.py "HF Model Downloader" "$(APP_NAME)-$(ARCH_NAME).dmg"; \
 			break; \
 		fi; \
 	done
@@ -96,11 +97,11 @@ dmg: build ## Create DMG package (macOS only)
 
 ##@ Release
 .PHONY: release-dry-run
-release-dry-run: ## Preview the next release version
+release-dry-run: install ## Preview the next release version
 	@$(UV) run semantic-release version --print
 
 .PHONY: release
-release: ## Execute semantic release (main branch only)
+release: install ## Execute semantic release (main branch only)
 	@if [ "$$(git branch --show-current)" != "main" ]; then \
 		echo "❌ Release can only be executed on main branch" >&2; \
 		exit 1; \

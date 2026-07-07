@@ -5,7 +5,7 @@ description = "A cross-platform GUI application for easily downloading Hugging F
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "huggingface-hub>=0.34.4",
+    "huggingface-hub[hf_xet]>=0.34.4",
     "modelscope>=1.29.0",
     "numpy>=1.24.0",
     "addict>=2.4.0",
@@ -56,4 +56,20 @@ dev = [
     "python-semantic-release",
     "ruff",
     "dmgbuild",
+]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "slow: marks tests as slow (may take more than 30 seconds)",
+    "network: marks tests that require network access",
+    "auth: marks tests that may require authentication",
 ]

@@ -15,7 +15,23 @@ import weakref
 from PyQt6.QtCore import QMutex, QMutexLocker, QObject, QThread, QTimer, pyqtSignal
 from tqdm.auto import tqdm
 
+from .hf_hub_env import (
+    apply_hf_download_env,
+    clear_hf_download_env,
+    hf_api_client,
+    resolve_hf_endpoint,
+    xet_available,
+)
+from .hf_repo_validate import hf_repo_type_mismatch_message
 from .utils import cleanup_environment, cleanup_lock_files
+
+
+def _abort_download(pipe, message: str) -> None:
+    if pipe:
+        pipe.send(f"Error: {message}")
+    print(f"Error: {message}")
+    sys.exit(1)
+
 
 # Platform configurations - simple dictionary approach
 PLATFORM_CONFIGS = {
@@ -162,56 +178,53 @@ def download_huggingface(
 ):
     """HuggingFace platform-specific download logic"""
     try:
-        from huggingface_hub import HfFolder, snapshot_download
-    except ImportError:
-        if pipe:
-            pipe.send("Error: HuggingFace Hub library not installed.")
-        return False
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:
+        _abort_download(pipe, f"failed to import huggingface_hub: {exc}")
 
-    if token:
-        HfFolder.save_token(token)
-        os.environ["HF_TOKEN"] = token
-
-    if endpoint:
-        os.environ["HF_ENDPOINT"] = endpoint
-        if "hf-mirror.com" in endpoint:
-            os.environ["HF_HUB_DISABLE_SSL_VERIFICATION"] = "1"
-        else:
-            os.environ.pop("HF_HUB_DISABLE_SSL_VERIFICATION", None)
-    else:
-        os.environ.pop("HF_HUB_DISABLE_SSL_VERIFICATION", None)
-
-    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
-    os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "300"
-    os.environ["HF_HUB_ENABLE_CONCURRENT_DOWNLOAD"] = "1"
+    resolved_endpoint = resolve_hf_endpoint(endpoint)
+    apply_hf_download_env(token=token, endpoint=resolved_endpoint)
 
     repo_dir = os.path.join(save_path, model_id.split("/")[-1])
 
     if pipe:
+        if not xet_available():
+            pipe.send(
+                "Warning: hf_xet is not available. Xet downloads may fall back to HTTP."
+            )
         pipe.send(f"Starting HuggingFace download of {model_id}")
 
     cpu_count = multiprocessing.cpu_count()
     max_workers = min(cpu_count + 2, 8)
 
-    result = snapshot_download(
-        repo_id=model_id,
-        repo_type=repo_type,
-        local_dir=repo_dir,
-        token=token,
-        force_download=False,
-        max_workers=max_workers,
-        tqdm_class=UnifiedProgressBar,
-        ignore_patterns=["*.h5", "*.ot", "*.msgpack", "*.bin", "*.pkl", "*.onnx", ".*"],
-        local_files_only=False,
-        etag_timeout=30,
-        proxies=None,
-        endpoint=endpoint,
-    )
+    try:
+        result = snapshot_download(
+            repo_id=model_id,
+            repo_type=repo_type,
+            local_dir=repo_dir,
+            token=token,
+            force_download=False,
+            max_workers=max_workers,
+            tqdm_class=UnifiedProgressBar,
+            ignore_patterns=[
+                "*.h5",
+                "*.ot",
+                "*.msgpack",
+                "*.bin",
+                "*.pkl",
+                "*.onnx",
+                ".*",
+            ],
+            local_files_only=False,
+            etag_timeout=30,
+            proxies=None,
+            endpoint=resolved_endpoint,
+        )
+    except Exception as exc:
+        _abort_download(pipe, f"HuggingFace download failed: {exc}")
 
     if pipe:
         pipe.send(f"HuggingFace download completed: {result}")
-
-    return True
 
 
 def download_modelscope(
@@ -227,9 +240,7 @@ def download_modelscope(
         from modelscope import HubApi, MsDataset
         from modelscope.hub.snapshot_download import snapshot_download
     except ImportError:
-        if pipe:
-            pipe.send("Error: ModelScope library not installed.")
-        return False
+        _abort_download(pipe, "ModelScope library not installed.")
 
     if token:
         try:
@@ -289,14 +300,8 @@ def download_modelscope(
         if pipe:
             pipe.send(f"ModelScope download completed: {result}")
 
-        return True
-
-    except Exception as e:
-        error_msg = f"ModelScope download failed: {e!s}"
-        if pipe:
-            pipe.send(error_msg)
-        print(f"Error: {error_msg}")
-        return False
+    except Exception as exc:
+        _abort_download(pipe, f"ModelScope download failed: {exc}")
 
 
 def unified_download_model(
@@ -335,37 +340,22 @@ def unified_download_model(
         signal.signal(signal.SIGINT, signal_handler)
 
         try:
-            success = False
             if platform == "huggingface":
-                success = download_huggingface(
+                download_huggingface(
                     model_id, save_path, token, endpoint, pipe, repo_type
                 )
             elif platform == "modelscope":
-                success = download_modelscope(
+                download_modelscope(
                     model_id, save_path, token, endpoint, pipe, repo_type
                 )
             else:
-                if pipe:
-                    pipe.send(f"Error: Unsupported platform '{platform}'")
-                return False
-
-            if not success:
-                if pipe:
-                    pipe.send(f"Error: {platform} download failed")
-                sys.exit(1)
-
-            return success
+                _abort_download(pipe, f"Unsupported platform '{platform}'")
 
         except KeyboardInterrupt:
-            if pipe:
-                pipe.send("Download cancelled by user")
-            return False
+            _abort_download(pipe, "Download cancelled by user")
 
-    except Exception as e:
-        error_msg = str(e)
-        if pipe:
-            pipe.send(f"Error during {platform} download: {error_msg}")
-        return False
+    except Exception as exc:
+        _abort_download(pipe, f"Error during {platform} download: {exc}")
     finally:
         if pipe:
             sys.stdout = old_stdout
@@ -586,6 +576,18 @@ class UnifiedDownloadWorker(QThread):
             cleanup_lock_files(self.repo_dir)
 
             repo_type_text = "model" if self.repo_type == "model" else "dataset"
+            if self.platform == "huggingface":
+                self._safe_emit("status", "Validating repository...")
+                with hf_api_client(token=self.token, endpoint=self.endpoint) as api:
+                    mismatch = hf_repo_type_mismatch_message(
+                        api,
+                        self.model_id,
+                        self.repo_type,
+                        self.token,
+                    )
+                if mismatch:
+                    raise Exception(mismatch)
+
             self._safe_emit(
                 "status",
                 f"Downloading {self.platform} {repo_type_text} to {self.repo_dir}...",
@@ -703,10 +705,7 @@ class UnifiedDownloadWorker(QThread):
                 os.environ.pop(self._config["token_env"], None)
                 os.environ.pop(self._config["endpoint_env"], None)
                 if self.platform == "huggingface":
-                    os.environ.pop("HF_HUB_DISABLE_SSL_VERIFICATION", None)
-                    os.environ.pop("HF_HUB_ENABLE_HF_TRANSFER", None)
-                    os.environ.pop("HF_HUB_DOWNLOAD_TIMEOUT", None)
-                    os.environ.pop("HF_HUB_ENABLE_CONCURRENT_DOWNLOAD", None)
+                    clear_hf_download_env()
                 self._logger.debug(f"{self.platform} environment variables cleaned")
             except Exception as e:
                 cleanup_errors.append(
