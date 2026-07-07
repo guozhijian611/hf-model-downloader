@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.6.2 (2026-07-07)
+
+### Bug Fixes
+
+- **download**: Bundle hf_xet, validate repo type, and migrate to uv
+  ([`dea7183`](https://github.com/samzong/hf-model-downloader/commit/dea7183de126c7a4591299c982e373b824eec5eb))
+
+
 ## v0.6.1 (2025-08-22)
 
 ### Bug Fixes
