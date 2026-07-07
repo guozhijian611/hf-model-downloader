@@ -31,7 +31,7 @@ class TestBasicE2E:
             yield tmpdir
 
     def test_huggingface_tiny_model(self, temp_dir):
-        """Test downloading a very small HuggingFace model"""
+        """Download Xet-enabled model hf-internal-testing/tiny-random-bert."""
         worker = UnifiedDownloadWorker(
             platform="huggingface",
             model_id="hf-internal-testing/tiny-random-bert",

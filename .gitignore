@@ -2,6 +2,8 @@
 build/
 dist/
 *.spec
+.pyinstaller-cache/
+.build.lock
 
 # Python
 __pycache__/
@@ -12,9 +14,6 @@ env/
 venv/
 .env/
 .venv/
-
-# UV lock file (application project - regenerate locally)
-uv.lock
 
 # OS specific
 .DS_Store

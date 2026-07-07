@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from .hf_hub_env import resolve_hf_endpoint
 from .resource_utils import get_asset_path
 from .unified_downloader import UnifiedDownloadWorker
 
@@ -368,7 +369,7 @@ class MainWindow(QMainWindow):
             if platform == "ModelScope":
                 endpoint = "https://modelscope.cn"
             else:
-                endpoint = "https://hf-mirror.com"
+                endpoint = resolve_hf_endpoint(None)
 
         if not repo_id:
             repo_type_text = "model ID" if repo_type == "model" else "dataset ID"

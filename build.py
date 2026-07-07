@@ -1,8 +1,14 @@
+import contextlib
 import io
 import os
 import platform
+import shutil
 import subprocess
 import sys
+from pathlib import Path
+
+if os.name == "posix":
+    import fcntl
 
 # Set UTF-8 encoding for all I/O operations
 os.environ["PYTHONUTF8"] = "1"
@@ -23,6 +29,60 @@ def get_architecture():
     return machine
 
 
+def _project_root() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _legacy_pyinstaller_cache_dir() -> Path | None:
+    system = platform.system().lower()
+    if system == "darwin":
+        return Path.home() / "Library" / "Application Support" / "pyinstaller"
+    if system == "windows":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            return Path(local_app_data) / "pyinstaller"
+    return None
+
+
+def _configure_pyinstaller_cache() -> Path:
+    cache_dir = _project_root() / ".pyinstaller-cache"
+    os.environ["PYINSTALLER_CONFIG_DIR"] = str(cache_dir)
+    return cache_dir
+
+
+def _clean_pyinstaller_cache() -> None:
+    cache_dir = _configure_pyinstaller_cache()
+    if cache_dir.exists():
+        shutil.rmtree(cache_dir, ignore_errors=True)
+    legacy_cache = _legacy_pyinstaller_cache_dir()
+    if legacy_cache and legacy_cache.exists():
+        shutil.rmtree(legacy_cache, ignore_errors=True)
+
+
+def _clean_local_build_artifacts() -> None:
+    root = _project_root()
+    for name in ("build", "dist"):
+        path = root / name
+        if path.exists():
+            shutil.rmtree(path, ignore_errors=True)
+    for spec in root.glob("*.spec"):
+        spec.unlink(missing_ok=True)
+
+
+@contextlib.contextmanager
+def _build_lock():
+    lock_path = _project_root() / ".build.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("w", encoding="utf-8") as lock_file:
+        if os.name == "posix":
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "posix":
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def build_app():
     system = platform.system().lower()
     arch = get_architecture()
@@ -40,7 +100,6 @@ def build_app():
     # Base PyInstaller command
     cmd = [
         "pyinstaller",
-        "--clean",
         "--noconfirm",
         f"--name={app_name}",
         "--add-data",
@@ -49,6 +108,10 @@ def build_app():
         "assets:assets",
         "--hidden-import",
         "huggingface_hub",
+        "--hidden-import",
+        "hf_xet",
+        "--collect-all",
+        "hf_xet",
         "--hidden-import",
         "tqdm",
         "--hidden-import",
@@ -101,8 +164,18 @@ def build_app():
         print(f"Building {output_name} for {system} ({arch})...")
         print(f"Command: {' '.join(cmd)}")
 
-        # Run PyInstaller
-        subprocess.run(cmd, check=True)
+        with _build_lock():
+            for attempt in range(2):
+                _clean_local_build_artifacts()
+                _clean_pyinstaller_cache()
+                try:
+                    subprocess.run(cmd, check=True, env=os.environ.copy())
+                    break
+                except subprocess.CalledProcessError:
+                    if attempt == 0:
+                        print("Build failed, retrying after cleaning artifacts...")
+                        continue
+                    raise
 
         # Print build information
         output_path = os.path.join("dist", output_name)
