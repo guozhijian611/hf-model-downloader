@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.18.1 (2026-07-29)
+
+### Bug Fixes
+
+- Restore check-update UI feedback after requests trust_env crash
+  ([`49b45aa`](https://github.com/guozhijian611/hf-model-downloader/commit/49b45aabc2ef5f007174a4ab076e7477bb9f1612))
+
+
 ## v0.18.0 (2026-07-29)
 
 ### Features
