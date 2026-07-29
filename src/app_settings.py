@@ -14,6 +14,7 @@ KEY_REPO_ID = "repo_id"
 KEY_SAVE_PATH = "save_path"
 KEY_TOKEN = "token"
 KEY_ENDPOINT = "endpoint"
+KEY_ENDPOINT_FAILOVER = "endpoint_failover"
 KEY_PROXY = "proxy"
 KEY_PROXY_ENABLED = "proxy_enabled"
 KEY_AUTO_RETRY = "auto_retry"
@@ -33,6 +34,7 @@ def load_form_settings() -> dict:
         KEY_SAVE_PATH: s.value(KEY_SAVE_PATH, "", type=str),
         KEY_TOKEN: s.value(KEY_TOKEN, "", type=str),
         KEY_ENDPOINT: s.value(KEY_ENDPOINT, "https://hf-mirror.com", type=str),
+        KEY_ENDPOINT_FAILOVER: s.value(KEY_ENDPOINT_FAILOVER, True, type=bool),
         KEY_PROXY: s.value(KEY_PROXY, "", type=str),
         KEY_PROXY_ENABLED: s.value(KEY_PROXY_ENABLED, False, type=bool),
         KEY_AUTO_RETRY: s.value(KEY_AUTO_RETRY, True, type=bool),
@@ -50,6 +52,7 @@ def save_form_settings(
     proxy: str,
     proxy_enabled: bool,
     auto_retry: bool = True,
+    endpoint_failover: bool = True,
 ) -> None:
     s = get_settings()
     s.setValue(KEY_PLATFORM, platform)
@@ -58,6 +61,7 @@ def save_form_settings(
     s.setValue(KEY_SAVE_PATH, save_path)
     s.setValue(KEY_TOKEN, token)
     s.setValue(KEY_ENDPOINT, endpoint)
+    s.setValue(KEY_ENDPOINT_FAILOVER, endpoint_failover)
     s.setValue(KEY_PROXY, proxy)
     s.setValue(KEY_PROXY_ENABLED, proxy_enabled)
     s.setValue(KEY_AUTO_RETRY, auto_retry)

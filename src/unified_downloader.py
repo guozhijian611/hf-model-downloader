@@ -149,6 +149,7 @@ class UnifiedDownloadWorker(QThread):
         repo_type="model",
         proxy=None,
         skip_validation=False,
+        endpoints=None,
     ):
         super().__init__()
 
@@ -166,7 +167,20 @@ class UnifiedDownloadWorker(QThread):
         self.skip_validation = bool(skip_validation)
 
         self._config = PLATFORM_CONFIGS[platform]
-        self.endpoint = endpoint if endpoint else self._config["default_endpoint"]
+        # Prefer multi-endpoint chain; fall back to single endpoint.
+        chain: list[str] = []
+        if endpoints:
+            for item in endpoints:
+                url = (item or "").strip().rstrip("/")
+                if url and url not in chain:
+                    chain.append(url)
+        single = (endpoint or "").strip().rstrip("/")
+        if single and single not in chain:
+            chain.insert(0, single)
+        if not chain:
+            chain = [self._config["default_endpoint"]]
+        self.endpoints = chain
+        self.endpoint = chain[0]
 
         # Emitter lives in the main thread (created here with QThread parent).
         self._signal_emitter = ThreadSafeSignalEmitter(self)
@@ -316,54 +330,90 @@ class UnifiedDownloadWorker(QThread):
             )
             if self.proxy:
                 self._safe_emit("download_log", f"已启用代理：{self.proxy}")
-
-            self._pipe_reader, self._pipe_writer = multiprocessing.Pipe(duplex=False)
-
-            self._output_thread = threading.Thread(
-                target=self._process_pipe_output, daemon=True
-            )
-            self._output_thread.start()
-
-            # Target must be a top-level function in a PyQt-free module.
-            self._download_process = multiprocessing.get_context("spawn").Process(
-                target=isolated_download_main,
-                args=(
-                    self.platform,
-                    self.model_id,
-                    self.save_path,
-                    self.token,
-                    self.endpoint,
-                    self._pipe_writer,
-                    self.repo_type,
-                    self.proxy,
-                ),
-            )
-            self._download_process.start()
-            self._safe_emit("download_log", "下载进程已启动，等待数据传输...")
+            if len(self.endpoints) > 1:
+                self._safe_emit(
+                    "download_log",
+                    "Endpoint 尝试顺序：" + " → ".join(self.endpoints),
+                )
 
             download_completed = False
             user_cancelled = False
             self._last_process_errors: list[str] = []
-            while self._download_process.is_alive():
+            last_exitcode = None
+
+            for ep_index, endpoint in enumerate(self.endpoints):
                 if self._cancel_event.is_set() or self.isInterruptionRequested():
                     user_cancelled = True
-                    self._logger.info("检测到取消请求，正在终止下载进程")
-                    self._download_process.terminate()
                     break
-                self._download_process.join(timeout=0.1)
 
-            if self._download_process.exitcode == 0:
-                download_completed = True
-            else:
-                self._logger.info(
-                    f"{platform_cn} 下载进程退出码：{self._download_process.exitcode}"
+                self.endpoint = endpoint
+                total_eps = len(self.endpoints)
+                self._safe_emit(
+                    "download_status",
+                    f"使用 Endpoint（{ep_index + 1}/{total_eps}）：{endpoint}",
                 )
+                self._safe_emit("download_log", f"当前 Endpoint：{endpoint}")
 
-            # Stop the pipe reader thread only — do NOT treat this as user cancel.
-            stop_requested = user_cancelled
-            self._cancel_event.set()
-            if self._output_thread:
-                self._output_thread.join(timeout=2.0)
+                # Fresh cancel flag for pipe reader only between endpoints.
+                # Keep user cancel via the same event; reset only if not user cancel.
+                if not user_cancelled:
+                    self._cancel_event.clear()
+
+                self._pipe_reader, self._pipe_writer = multiprocessing.Pipe(
+                    duplex=False
+                )
+                self._output_thread = threading.Thread(
+                    target=self._process_pipe_output, daemon=True
+                )
+                self._output_thread.start()
+
+                self._download_process = multiprocessing.get_context("spawn").Process(
+                    target=isolated_download_main,
+                    args=(
+                        self.platform,
+                        self.model_id,
+                        self.save_path,
+                        self.token,
+                        endpoint,
+                        self._pipe_writer,
+                        self.repo_type,
+                        self.proxy,
+                    ),
+                )
+                self._download_process.start()
+                self._safe_emit("download_log", "下载进程已启动，等待数据传输...")
+
+                while self._download_process.is_alive():
+                    if self._cancel_event.is_set() or self.isInterruptionRequested():
+                        user_cancelled = True
+                        self._logger.info("检测到取消请求，正在终止下载进程")
+                        self._download_process.terminate()
+                        break
+                    self._download_process.join(timeout=0.1)
+
+                last_exitcode = self._download_process.exitcode
+                self._cancel_event.set()
+                if self._output_thread:
+                    self._output_thread.join(timeout=2.0)
+                self._output_thread = None
+                self._download_process = None
+
+                if last_exitcode == 0:
+                    download_completed = True
+                    break
+
+                self._logger.info(
+                    f"{platform_cn} Endpoint {endpoint} 退出码：{last_exitcode}"
+                )
+                if user_cancelled:
+                    break
+                if ep_index + 1 < len(self.endpoints):
+                    self._safe_emit(
+                        "download_log",
+                        f"Endpoint 失败，切换下一个：{self.endpoints[ep_index + 1]}",
+                    )
+                    # Allow next attempt to run the pipe loop.
+                    self._cancel_event = threading.Event()
 
             if download_completed:
                 cleanup_lock_files(self.repo_dir)
@@ -373,7 +423,7 @@ class UnifiedDownloadWorker(QThread):
                 )
                 self._logger.info(f"{platform_cn} 下载成功")
                 self._safe_emit("download_finished")
-            elif stop_requested:
+            elif user_cancelled:
                 raise Exception("用户已取消下载")
             else:
                 detail = ""
@@ -383,7 +433,7 @@ class UnifiedDownloadWorker(QThread):
                     raise Exception(detail)
                 raise Exception(
                     f"{platform_cn} 下载进程失败"
-                    f"（退出码 {self._download_process.exitcode}）。"
+                    f"（退出码 {last_exitcode}）。"
                     "请检查网络、代理、Token 或 Endpoint。"
                 )
 

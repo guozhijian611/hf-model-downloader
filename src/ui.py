@@ -25,7 +25,12 @@ from PyQt6.QtWidgets import (
 
 from .app_logging import get_last_crash_log_path, get_log_dir, get_runtime_log_path
 from .app_settings import load_form_settings, save_form_settings
-from .hf_hub_env import resolve_hf_endpoint
+from .endpoints import (
+    build_endpoint_chain,
+    default_endpoint,
+    preset_labels,
+    url_from_combo_text,
+)
 from .proxy_env import normalize_proxy
 from .resource_utils import get_asset_path
 from .unified_downloader import UnifiedDownloadWorker
@@ -148,9 +153,10 @@ class MainWindow(QMainWindow):
             "1. 选择平台（Hugging Face / ModelScope）\n"
             "2. 填写模型或数据集 ID\n"
             "3. 选择保存目录\n"
-            "4. 可选：Token / 代理\n"
-            "5. 建议勾选「失败自动重试」（断点续传）\n"
-            "6. 点击下载（会记住上次输入）\n"
+            "4. 可选：Token / 代理 / Endpoint\n"
+            "5. 可勾选 Endpoint 失败自动切换\n"
+            "6. 建议勾选「失败自动重试」（断点续传）\n"
+            "7. 点击下载（会记住上次输入）\n"
         )
         help_text.setWordWrap(True)
         help_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -243,12 +249,23 @@ class MainWindow(QMainWindow):
 
         endpoint_layout = QHBoxLayout()
         endpoint_label = QLabel("Endpoint:")
-        self.endpoint_input = QLineEdit()
-        self.endpoint_input.setText("https://hf-mirror.com")
-        self.endpoint_input.setPlaceholderText("默认：https://hf-mirror.com")
+        self.endpoint_combo = QComboBox()
+        self.endpoint_combo.setEditable(True)
+        self.endpoint_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.endpoint_combo.setMinimumWidth(360)
+        self.endpoint_combo.setToolTip(
+            "可下拉选择预设，也可直接输入自定义 Endpoint URL"
+        )
+        self.endpoint_failover = QCheckBox("失败自动切换")
+        self.endpoint_failover.setChecked(True)
+        self.endpoint_failover.setToolTip(
+            "当前 Endpoint 失败时，按预设顺序自动尝试其他 Endpoint（断点续传）"
+        )
         endpoint_layout.addWidget(endpoint_label)
-        endpoint_layout.addWidget(self.endpoint_input)
+        endpoint_layout.addWidget(self.endpoint_combo, stretch=1)
+        endpoint_layout.addWidget(self.endpoint_failover)
         layout.addLayout(endpoint_layout)
+        self._refill_endpoint_combo("Hugging Face")
 
         proxy_layout = QHBoxLayout()
         proxy_label = QLabel("代理:")
@@ -397,18 +414,53 @@ class MainWindow(QMainWindow):
         if data["token"]:
             self.token_input.setText(data["token"])
 
-        endpoint = data["endpoint"]
-        if endpoint:
-            self.endpoint_input.setText(endpoint)
-        elif platform == "ModelScope":
-            self.endpoint_input.setText("https://modelscope.cn")
-        else:
-            self.endpoint_input.setText("https://hf-mirror.com")
+        self._refill_endpoint_combo(platform)
+        endpoint = data.get("endpoint") or default_endpoint(
+            "modelscope" if platform == "ModelScope" else "huggingface"
+        )
+        self._set_endpoint_combo_url(endpoint)
+        self.endpoint_failover.setChecked(bool(data.get("endpoint_failover", True)))
 
         self.proxy_enabled.setChecked(bool(data["proxy_enabled"]))
         self.proxy_input.setText(data["proxy"] or "")
         self.proxy_input.setEnabled(self.proxy_enabled.isChecked())
         self.auto_retry_checkbox.setChecked(bool(data.get("auto_retry", True)))
+
+    def _platform_key(self) -> str:
+        return (
+            "modelscope"
+            if self.platform_combo.currentText() == "ModelScope"
+            else "huggingface"
+        )
+
+    def _refill_endpoint_combo(self, platform_text: str | None = None):
+        """Reload endpoint presets for the selected platform."""
+        if platform_text is None:
+            platform_text = self.platform_combo.currentText()
+        key = "modelscope" if platform_text == "ModelScope" else "huggingface"
+        current = url_from_combo_text(self.endpoint_combo.currentText())
+        self.endpoint_combo.blockSignals(True)
+        self.endpoint_combo.clear()
+        self.endpoint_combo.addItems(preset_labels(key))
+        self.endpoint_combo.blockSignals(False)
+        if current:
+            self._set_endpoint_combo_url(current)
+        else:
+            self._set_endpoint_combo_url(default_endpoint(key))
+
+    def _set_endpoint_combo_url(self, url: str):
+        url = url_from_combo_text(url)
+        if not url:
+            return
+        # Prefer matching a preset row; otherwise put raw URL in edit field.
+        for i in range(self.endpoint_combo.count()):
+            if url_from_combo_text(self.endpoint_combo.itemText(i)) == url:
+                self.endpoint_combo.setCurrentIndex(i)
+                return
+        self.endpoint_combo.setEditText(url)
+
+    def _current_endpoint_url(self) -> str:
+        return url_from_combo_text(self.endpoint_combo.currentText())
 
     def _save_settings(self):
         """Persist current form values for next launch."""
@@ -418,7 +470,8 @@ class MainWindow(QMainWindow):
             repo_id=self.repo_input.text().strip(),
             save_path=self.path_input.text().strip(),
             token=self.token_input.text().strip(),
-            endpoint=self.endpoint_input.text().strip(),
+            endpoint=self._current_endpoint_url(),
+            endpoint_failover=self.endpoint_failover.isChecked(),
             proxy=self.proxy_input.text().strip(),
             proxy_enabled=self.proxy_enabled.isChecked(),
             auto_retry=self.auto_retry_checkbox.isChecked(),
@@ -431,10 +484,13 @@ class MainWindow(QMainWindow):
         if self._update_worker and self._update_worker.isRunning():
             self._update_worker.wait(3000)
         if self.download_worker and self.download_worker.isRunning():
-            self.download_worker.finished.disconnect()
-            self.download_worker.error.disconnect()
-            self.download_worker.status.disconnect()
-            self.download_worker.log.disconnect()
+            try:
+                self.download_worker.download_finished.disconnect()
+                self.download_worker.download_error.disconnect()
+                self.download_worker.download_status.disconnect()
+                self.download_worker.download_log.disconnect()
+            except TypeError:
+                pass
 
             self.download_worker.cancel_download()
             if not self.download_worker.wait(5000):
@@ -451,10 +507,7 @@ class MainWindow(QMainWindow):
         self.platform_combo.setCurrentText(platform_text)
 
     def on_platform_changed(self, platform_text):
-        if platform_text == "ModelScope":
-            self.endpoint_input.setText("https://modelscope.cn")
-        else:
-            self.endpoint_input.setText("https://hf-mirror.com")
+        self._refill_endpoint_combo(platform_text)
 
     def open_models_page(self):
         """Open the models page for the current platform"""
@@ -736,12 +789,13 @@ class MainWindow(QMainWindow):
                 self.update_status("错误：已启用代理，但代理地址为空", error=True)
                 return
 
-        endpoint = self.endpoint_input.text().strip()
-        if not endpoint:
-            if platform == "ModelScope":
-                endpoint = "https://modelscope.cn"
-            else:
-                endpoint = resolve_hf_endpoint(None)
+        platform_key = "modelscope" if platform == "ModelScope" else "huggingface"
+        endpoint = self._current_endpoint_url() or default_endpoint(platform_key)
+        endpoints = build_endpoint_chain(
+            endpoint,
+            platform_key,
+            failover=self.endpoint_failover.isChecked(),
+        )
 
         if not repo_id:
             repo_type_text = "模型 ID" if repo_type == "model" else "数据集 ID"
@@ -757,21 +811,22 @@ class MainWindow(QMainWindow):
         self._retry_attempt = 0
         self._retry_timer.stop()
         self._download_params = {
-            "platform": "modelscope" if platform == "ModelScope" else "huggingface",
+            "platform": platform_key,
             "repo_id": repo_id,
             "save_path": save_path,
             "token": token,
-            "endpoint": endpoint,
+            "endpoint": endpoints[0],
+            "endpoints": endpoints,
             "repo_type": repo_type,
             "proxy": proxy,
         }
         logger.info(
-            "Start download platform=%s repo=%s type=%s path=%s endpoint=%s proxy=%s",
-            self._download_params["platform"],
+            "Start download platform=%s repo=%s type=%s path=%s endpoints=%s proxy=%s",
+            platform_key,
             repo_id,
             repo_type,
             save_path,
-            endpoint,
+            endpoints,
             bool(proxy),
         )
         self._start_download_job(clear_log=True, skip_validation=False)
@@ -790,6 +845,11 @@ class MainWindow(QMainWindow):
             self.update_status("正在初始化下载...")
             if params["proxy"]:
                 self.update_status(f"使用代理：{params['proxy']}")
+            eps = params.get("endpoints") or [params["endpoint"]]
+            if len(eps) > 1:
+                self.update_status("Endpoint 顺序：" + " → ".join(eps))
+            else:
+                self.update_status(f"Endpoint：{eps[0]}")
             if self.auto_retry_checkbox.isChecked():
                 self.update_status(
                     "已开启「失败自动重试直至完成」：中断后会自动续传重试"
@@ -809,6 +869,7 @@ class MainWindow(QMainWindow):
                 params["repo_type"],
                 proxy=params["proxy"],
                 skip_validation=skip_validation,
+                endpoints=params.get("endpoints"),
             )
         except Exception as exc:
             logger.exception("Failed to create download worker: %s", exc)
