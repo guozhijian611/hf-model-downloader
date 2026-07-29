@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.12.1 (2026-07-29)
+
+### Bug Fixes
+
+- **deps**: Add PySocks for socks5 proxy support
+  ([`72d1394`](https://github.com/guozhijian611/hf-model-downloader/commit/72d1394e70dfbd65ff5d86cb569cda8bcb53dd4c))
+
+
 ## v0.12.0 (2026-07-29)
 
 ### Features
