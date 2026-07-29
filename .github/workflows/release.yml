@@ -3,6 +3,8 @@ name: Semantic Release
 permissions:
   contents: write
   id-token: write
+  # Needed so this workflow can call the reusable build workflow.
+  actions: write
 
 on:
   push:
@@ -20,83 +22,78 @@ jobs:
       released: ${{ steps.release.outputs.released }}
       version: ${{ steps.release.outputs.version }}
       tag: ${{ steps.release.outputs.tag }}
-    
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GH_TOKEN || github.token }}
-      
+          # Prefer PAT so version bump commits can trigger follow-up workflows if needed.
+          token: ${{ secrets.GH_PAT || secrets.GH_TOKEN || github.token }}
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          python-version: '3.13'
-      
+          python-version: "3.13"
+
       - name: Install dependencies
         run: make install
-      
+
       - name: Configure Git
         run: |
           echo "Configuring Git for automated commits"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           echo "Git configuration completed"
-      
+
       - name: Python Semantic Release
         id: release
         env:
-          GH_TOKEN: ${{ secrets.GH_TOKEN || github.token }}
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GH_TOKEN || github.token }}
         run: |
+          set -euo pipefail
           echo "Starting semantic release process"
-          
-          # Store the current commit SHA before release
+
           BEFORE_SHA=$(git rev-parse HEAD)
           echo "Commit SHA before release: $BEFORE_SHA"
-          
-          # Check what version would be released
+
           echo "Checking next version..."
           NEXT_VERSION=$(uv run semantic-release version --print)
           echo "Next version would be: $NEXT_VERSION"
-          
-          # Execute the actual release (this includes version bump, build, and publish)
+
           echo "Executing semantic-release version..."
+          set +e
           uv run semantic-release version
           RELEASE_EXIT_CODE=$?
+          set -e
           echo "semantic-release version exit code: $RELEASE_EXIT_CODE"
-          
-          # Check if version step created new commits (indicating a release was made)
+
           AFTER_SHA=$(git rev-parse HEAD)
           echo "Commit SHA after release: $AFTER_SHA"
-          
+
           if [ "$BEFORE_SHA" != "$AFTER_SHA" ] && [ $RELEASE_EXIT_CODE -eq 0 ]; then
             echo "New version was created, proceeding with publish"
             uv run semantic-release publish
-            echo "released=true" >> $GITHUB_OUTPUT
-            echo "version=$NEXT_VERSION" >> $GITHUB_OUTPUT
-            echo "tag=v$NEXT_VERSION" >> $GITHUB_OUTPUT
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "tag=v$NEXT_VERSION" >> "$GITHUB_OUTPUT"
             echo "Release v$NEXT_VERSION created successfully"
           else
             echo "No new release was created (version $NEXT_VERSION already exists)"
-            echo "released=false" >> $GITHUB_OUTPUT
-            echo "version=$NEXT_VERSION" >> $GITHUB_OUTPUT
-            echo "tag=" >> $GITHUB_OUTPUT
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+            echo "tag=" >> "$GITHUB_OUTPUT"
             echo "Skipping publish step - no new release needed"
           fi
 
-  trigger-build:
+  # Direct reusable-workflow call: does NOT rely on GITHUB_TOKEN cascading events
+  # and does NOT need `gh workflow run` (which returns HTTP 403 with github.token).
+  build-packages:
     needs: release
     if: needs.release.outputs.released == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger Multi-Platform Build
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GH_TOKEN || github.token }}
-        run: |
-          echo "Triggering multi-platform build for release ${{ needs.release.outputs.tag }}"
-          gh workflow run build-multi-platform.yml \
-            --repo "${{ github.repository }}" \
-            --field release_tag="${{ needs.release.outputs.tag }}" \
-            --field version="${{ needs.release.outputs.version }}"
-          echo "Multi-platform build workflow triggered successfully"
+    uses: ./.github/workflows/build-multi-platform.yml
+    with:
+      release_tag: ${{ needs.release.outputs.tag }}
+      version: ${{ needs.release.outputs.version }}
+    secrets: inherit
