@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.10.3 (2026-07-29)
+
+### Bug Fixes
+
+- **download**: Show real HF errors and harden mirror downloads
+  ([`795b2e1`](https://github.com/guozhijian611/hf-model-downloader/commit/795b2e12fcce87f9b02cd05f2fc30cb8ebbcbe92))
+
+
 ## v0.10.2 (2026-07-29)
 
 ### Bug Fixes
