@@ -19,6 +19,8 @@ KEY_PROXY = "proxy"
 KEY_PROXY_ENABLED = "proxy_enabled"
 KEY_AUTO_RETRY = "auto_retry"
 KEY_DOWNLOAD_BACKEND = "download_backend"
+KEY_STALL_RESTART = "stall_restart"
+KEY_STALL_TIMEOUT_SEC = "stall_timeout_sec"
 
 
 def get_settings() -> QSettings:
@@ -42,6 +44,8 @@ def load_form_settings() -> dict:
         KEY_DOWNLOAD_BACKEND: s.value(
             KEY_DOWNLOAD_BACKEND, "huggingface-hub", type=str
         ),
+        KEY_STALL_RESTART: s.value(KEY_STALL_RESTART, True, type=bool),
+        KEY_STALL_TIMEOUT_SEC: s.value(KEY_STALL_TIMEOUT_SEC, 120, type=int),
     }
 
 
@@ -58,6 +62,8 @@ def save_form_settings(
     auto_retry: bool = True,
     endpoint_failover: bool = True,
     download_backend: str = "huggingface-hub",
+    stall_restart: bool = True,
+    stall_timeout_sec: int = 120,
 ) -> None:
     s = get_settings()
     s.setValue(KEY_PLATFORM, platform)
@@ -71,4 +77,6 @@ def save_form_settings(
     s.setValue(KEY_PROXY_ENABLED, proxy_enabled)
     s.setValue(KEY_AUTO_RETRY, auto_retry)
     s.setValue(KEY_DOWNLOAD_BACKEND, download_backend)
+    s.setValue(KEY_STALL_RESTART, stall_restart)
+    s.setValue(KEY_STALL_TIMEOUT_SEC, int(stall_timeout_sec))
     s.sync()

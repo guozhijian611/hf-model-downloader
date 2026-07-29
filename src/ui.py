@@ -1,6 +1,8 @@
 import logging
 import os
 import platform
+import re
+import time
 from pathlib import Path
 
 from PyQt6.QtCore import QSize, Qt, QTimer, QUrl
@@ -18,6 +20,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -161,7 +164,7 @@ class MainWindow(QMainWindow):
             "3. 选择保存目录\n"
             "4. 可选：Token / 代理 / Endpoint\n"
             "5. 下载方式可选 huggingface-hub 或 hfd/aria2\n"
-            "6. 可勾选 Endpoint 失败自动切换 + 失败自动重试\n"
+            "6. 可勾选失败自动重试 / 卡住无速度自动重启\n"
             "7. 点击下载（会记住上次输入）\n"
         )
         help_text.setWordWrap(True)
@@ -315,7 +318,21 @@ class MainWindow(QMainWindow):
             "下载中断或失败时自动重试，已下载部分会断点续传；"
             "点击「停止」可结束重试循环。"
         )
+        self.stall_restart_checkbox = QCheckBox("卡住无速度自动重启")
+        self.stall_restart_checkbox.setChecked(True)
+        self.stall_restart_checkbox.setToolTip(
+            "下载过程中若长时间没有进度日志/速度，自动停止并重新开始（断点续传）。"
+        )
+        stall_timeout_label = QLabel("超时(秒):")
+        self.stall_timeout_spin = QSpinBox()
+        self.stall_timeout_spin.setRange(30, 600)
+        self.stall_timeout_spin.setSingleStep(30)
+        self.stall_timeout_spin.setValue(120)
+        self.stall_timeout_spin.setToolTip("超过该秒数无进度则视为卡住（默认 120 秒）")
         retry_layout.addWidget(self.auto_retry_checkbox)
+        retry_layout.addWidget(self.stall_restart_checkbox)
+        retry_layout.addWidget(stall_timeout_label)
+        retry_layout.addWidget(self.stall_timeout_spin)
         retry_layout.addStretch()
         layout.addLayout(retry_layout)
 
@@ -385,6 +402,13 @@ class MainWindow(QMainWindow):
         self._retry_timer = QTimer(self)
         self._retry_timer.setSingleShot(True)
         self._retry_timer.timeout.connect(self._on_retry_timer)
+        # Stall (no progress) watchdog
+        self._last_download_activity = 0.0
+        self._download_watch_started = 0.0
+        self._pending_stall_restart = False
+        self._stall_watch_timer = QTimer(self)
+        self._stall_watch_timer.setInterval(5000)
+        self._stall_watch_timer.timeout.connect(self._check_download_stall)
         self._load_settings()
 
     def _set_dynamic_minimum_height(self):
@@ -451,6 +475,9 @@ class MainWindow(QMainWindow):
         self.proxy_input.setText(data["proxy"] or "")
         self.proxy_input.setEnabled(self.proxy_enabled.isChecked())
         self.auto_retry_checkbox.setChecked(bool(data.get("auto_retry", True)))
+        self.stall_restart_checkbox.setChecked(bool(data.get("stall_restart", True)))
+        stall_sec = int(data.get("stall_timeout_sec") or 120)
+        self.stall_timeout_spin.setValue(max(30, min(600, stall_sec)))
 
         backend = data.get("download_backend") or BACKEND_HUB
         idx = self.backend_combo.findData(backend)
@@ -527,12 +554,16 @@ class MainWindow(QMainWindow):
             proxy_enabled=self.proxy_enabled.isChecked(),
             auto_retry=self.auto_retry_checkbox.isChecked(),
             download_backend=self._current_backend(),
+            stall_restart=self.stall_restart_checkbox.isChecked(),
+            stall_timeout_sec=self.stall_timeout_spin.value(),
         )
 
     def closeEvent(self, event):
         self._save_settings()
         self._user_stopped = True
+        self._pending_stall_restart = False
         self._retry_timer.stop()
+        self._stall_watch_timer.stop()
         if self._update_worker and self._update_worker.isRunning():
             self._update_worker.wait(3000)
         if self.download_worker and self.download_worker.isRunning():
@@ -882,6 +913,7 @@ class MainWindow(QMainWindow):
 
         self._save_settings()
         self._user_stopped = False
+        self._pending_stall_restart = False
         self._retry_attempt = 0
         self._retry_timer.stop()
         self._download_params = {
@@ -916,6 +948,10 @@ class MainWindow(QMainWindow):
 
         params = self._download_params
         self._set_downloading_ui(True)
+        self._touch_download_activity()
+        self._download_watch_started = time.monotonic()
+        if self.stall_restart_checkbox.isChecked():
+            self._stall_watch_timer.start()
 
         if clear_log:
             self.log_text.clear()
@@ -938,6 +974,11 @@ class MainWindow(QMainWindow):
             if self.auto_retry_checkbox.isChecked():
                 self.update_status(
                     "已开启「失败自动重试直至完成」：中断后会自动续传重试"
+                )
+            if self.stall_restart_checkbox.isChecked():
+                self.update_status(
+                    f"已开启「卡住无速度自动重启」："
+                    f"{self.stall_timeout_spin.value()} 秒无进度将重启"
                 )
         elif self._retry_attempt > 0:
             self.update_status(
@@ -994,7 +1035,9 @@ class MainWindow(QMainWindow):
 
     def stop_download(self):
         self._user_stopped = True
+        self._pending_stall_restart = False
         self._retry_timer.stop()
+        self._stall_watch_timer.stop()
         self.update_status("正在停止下载（并取消自动重试）...")
         if self.download_worker and self.download_worker.isRunning():
             self.stop_button.setEnabled(False)
@@ -1003,7 +1046,93 @@ class MainWindow(QMainWindow):
             self._set_downloading_ui(False)
             self.update_status("⏹️ 已停止下载")
 
+    def _touch_download_activity(self, message: str = "") -> None:
+        """Record that the download produced some output/progress."""
+        now = time.monotonic()
+        self._last_download_activity = now
+        # Progress-looking lines also count (even if rate is low).
+        if message and (
+            re.search(r"\d+%", message)
+            or re.search(r"\d+(\.\d+)?\s*[kKmMgGtT]?B", message)
+            or "Downloading" in message
+            or "Fetching" in message
+            or "Resuming" in message
+            or "Listed" in message
+            or "files" in message.lower()
+        ):
+            self._last_download_activity = now
+
+    def _check_download_stall(self) -> None:
+        if not self.stall_restart_checkbox.isChecked():
+            return
+        if self._user_stopped or self._pending_stall_restart:
+            return
+        if not self.download_worker or not self.download_worker.isRunning():
+            return
+        if self._retry_timer.isActive():
+            return
+
+        timeout = int(self.stall_timeout_spin.value())
+        # Grace period: validation / process startup may be quiet.
+        grace = max(45, min(timeout, 90))
+        if self._download_watch_started and (
+            time.monotonic() - self._download_watch_started < grace
+        ):
+            return
+
+        idle = time.monotonic() - (self._last_download_activity or 0)
+        if idle < timeout:
+            return
+
+        logger.warning("Download stall detected: idle=%.0fs timeout=%ss", idle, timeout)
+        self._pending_stall_restart = True
+        self._user_stopped = False
+        self.update_status(
+            f"⚠️ 已 {int(idle)} 秒无进度，判定卡住，自动停止并重新开始…",
+            error=True,
+        )
+        try:
+            self.download_worker.cancel_download()
+        except Exception as exc:
+            logger.exception("Stall cancel failed: %s", exc)
+            self._pending_stall_restart = False
+            return
+        # cancel() may invalidate signals so error might not fire — poll until stop.
+        QTimer.singleShot(800, self._after_stall_cancel)
+
+    def _after_stall_cancel(self) -> None:
+        if self._user_stopped:
+            self._pending_stall_restart = False
+            return
+        if not self._pending_stall_restart:
+            return
+        if self.download_worker and self.download_worker.isRunning():
+            QTimer.singleShot(800, self._after_stall_cancel)
+            return
+        self._pending_stall_restart = False
+        self.download_worker = None
+        self._schedule_stall_or_error_restart(
+            "因卡住无进度已中断，准备重新开始（断点续传）"
+        )
+
+    def _schedule_stall_or_error_restart(self, reason: str) -> None:
+        """Shared path for stall restart (and reuses retry delay)."""
+        self._stall_watch_timer.stop()
+        self._retry_attempt += 1
+        delay = self._retry_delay_seconds(self._retry_attempt)
+        self._set_downloading_ui(True)
+        self.update_status(reason, error=True)
+        self.update_status(
+            f"将在 {delay} 秒后自动重新开始（第 {self._retry_attempt} 次，断点续传）。"
+            "点「停止」可取消。"
+        )
+        self._retry_timer.start(delay * 1000)
+
     def update_status(self, message, error=False):
+        # Worker status counts as activity (unless it's our own stall notice).
+        if self.download_worker and self.download_worker.isRunning():
+            if "无进度" not in message and "卡住" not in message:
+                self._touch_download_activity(message)
         if error:
             self.log_text.append(f"❌ {message}")
         else:
@@ -1013,6 +1142,8 @@ class MainWindow(QMainWindow):
         )
 
     def update_log(self, message):
+        if self.download_worker and self.download_worker.isRunning():
+            self._touch_download_activity(str(message))
         self.log_text.append(message)
         self.log_text.verticalScrollBar().setValue(
             self.log_text.verticalScrollBar().maximum()
@@ -1036,6 +1167,8 @@ class MainWindow(QMainWindow):
 
     def download_finished(self):
         self._retry_timer.stop()
+        self._stall_watch_timer.stop()
+        self._pending_stall_restart = False
         attempts = self._retry_attempt
         self._retry_attempt = 0
         self._set_downloading_ui(False)
@@ -1052,8 +1185,17 @@ class MainWindow(QMainWindow):
             or "cancelled by user" in lowered
             or "用户已取消" in error_msg
         )
+
+        # Stall watchdog forced a cancel → restart, not user stop.
+        if self._pending_stall_restart and not self._user_stopped:
+            self._pending_stall_restart = False
+            self._schedule_stall_or_error_restart(f"因卡住无进度已中断：{error_msg}")
+            return
+
         if is_cancel:
             self._retry_timer.stop()
+            self._stall_watch_timer.stop()
+            self._pending_stall_restart = False
             self._set_downloading_ui(False)
             self.update_status("⏹️ 已停止下载")
             self.log_text.append("⏹️ 已停止下载")
@@ -1065,18 +1207,12 @@ class MainWindow(QMainWindow):
             and not self._is_non_retryable_error(error_msg)
         )
         if can_retry:
-            self._retry_attempt += 1
-            delay = self._retry_delay_seconds(self._retry_attempt)
-            self._set_downloading_ui(True)
-            self.update_status(f"下载中断：{error_msg}", error=True)
-            self.update_status(
-                f"将在 {delay} 秒后自动重试（第 {self._retry_attempt} 次）。"
-                "已下载内容会断点续传；点「停止」可取消。"
-            )
-            self._retry_timer.start(delay * 1000)
+            self._schedule_stall_or_error_restart(f"下载中断：{error_msg}")
             return
 
         self._retry_timer.stop()
+        self._stall_watch_timer.stop()
+        self._pending_stall_restart = False
         self._set_downloading_ui(False)
         self.update_status(f"错误：{error_msg}", error=True)
         self.log_text.append(f"❌ 错误：{error_msg}")
