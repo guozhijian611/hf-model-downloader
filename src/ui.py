@@ -7,7 +7,7 @@ import threading
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QSize, Qt, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
@@ -40,7 +40,10 @@ from .hfd_backend import (
     BACKEND_CHOICES,
     BACKEND_HFD,
     BACKEND_HUB,
+    can_auto_install_hfd_deps,
     hfd_availability,
+    missing_hfd_deps,
+    run_hfd_deps_install,
 )
 from .monitor_window import MonitorWindow
 from .proxy_env import normalize_proxy
@@ -60,6 +63,17 @@ AUTHOR_NAME = "guozhijian611"
 AUTHOR_GITHUB_URL = "https://github.com/guozhijian611"
 
 logger = logging.getLogger(__name__)
+
+
+class _HfdDepsInstallWorker(QThread):
+    """Background installer for aria2 / bash used by hfd backend."""
+
+    log_line = pyqtSignal(str)
+    finished_ok = pyqtSignal(bool, str)
+
+    def run(self) -> None:
+        ok, summary = run_hfd_deps_install(log_cb=self.log_line.emit)
+        self.finished_ok.emit(ok, summary)
 
 
 class MainWindow(QMainWindow):
@@ -256,10 +270,21 @@ class MainWindow(QMainWindow):
         self.backend_combo.currentIndexChanged.connect(self._on_backend_changed)
         self.backend_status = QLabel("")
         self.backend_status.setStyleSheet("color: #666; font-size: 11px;")
+        self.backend_status.setWordWrap(True)
+        self.hfd_install_btn = QPushButton("一键安装 hfd 依赖")
+        self.hfd_install_btn.setToolTip(
+            "自动安装 aria2c（及 Windows 上的 Git Bash，如缺失）。\n"
+            "使用 brew / winget / choco / scoop / apt 等，需本机已有对应包管理器。\n"
+            "安装后建议重启本程序以刷新 PATH。"
+        )
+        self.hfd_install_btn.setVisible(False)
+        self.hfd_install_btn.clicked.connect(self.install_hfd_dependencies)
         backend_layout.addWidget(backend_label)
         backend_layout.addWidget(self.backend_combo)
         backend_layout.addWidget(self.backend_status, stretch=1)
+        backend_layout.addWidget(self.hfd_install_btn)
         layout.addLayout(backend_layout)
+        self._hfd_install_worker = None
         self._refresh_backend_status()
 
         repo_layout = QHBoxLayout()
@@ -645,12 +670,95 @@ class MainWindow(QMainWindow):
             color = "#2e7d32" if ok else "#c62828"
             self.backend_status.setStyleSheet(f"color: {color}; font-size: 11px;")
             self.backend_status.setText(msg)
+            # One-click install when deps missing
+            show_install = (not ok) and bool(missing_hfd_deps())
+            self.hfd_install_btn.setVisible(show_install)
+            if show_install:
+                if can_auto_install_hfd_deps():
+                    self.hfd_install_btn.setText("一键安装 hfd 依赖")
+                    self.hfd_install_btn.setEnabled(
+                        self._hfd_install_worker is None
+                        or not self._hfd_install_worker.isRunning()
+                    )
+                else:
+                    self.hfd_install_btn.setText("查看安装说明")
+                    self.hfd_install_btn.setEnabled(True)
         else:
             self.backend_status.setStyleSheet("color: #666; font-size: 11px;")
-            self.backend_status.setText("使用 Python huggingface-hub")
+            self.backend_status.setText(
+                "使用 Python huggingface-hub（可随时改 hfd，同目录可续传）"
+            )
+            self.hfd_install_btn.setVisible(False)
 
     def _on_backend_changed(self, _index: int = 0):
         self._refresh_backend_status()
+        backend = self._current_backend()
+        if backend == BACKEND_HFD:
+            ok, msg = hfd_availability()
+            if ok:
+                self.update_status(
+                    "已切换 hfd：下次点「下载」将用 aria2；"
+                    "与 hub 使用相同保存目录时可续传已下完的文件。"
+                )
+            else:
+                self.update_status(f"hfd 当前不可用：{msg}", error=True)
+
+    def install_hfd_dependencies(self) -> None:
+        """One-click install aria2/bash for hfd backend."""
+        missing = missing_hfd_deps()
+        if not missing:
+            self._refresh_backend_status()
+            QMessageBox.information(self, "hfd 依赖", "依赖已齐全，可直接使用 hfd。")
+            return
+
+        if not can_auto_install_hfd_deps():
+            QMessageBox.information(
+                self,
+                "手动安装 hfd 依赖",
+                "缺少：" + "、".join(missing) + "\n\n"
+                "自动安装需要本机已有包管理器：\n"
+                "· macOS：Homebrew → brew install aria2\n"
+                "· Windows：winget install aria2.aria2\n"
+                "  以及 Git for Windows（提供 bash）\n"
+                "· Linux：sudo apt/dnf install aria2\n\n"
+                "装好后请完全退出并重新打开本程序。",
+            )
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "安装 hfd 依赖",
+            "将尝试自动安装：\n· " + "\n· ".join(missing) + "\n\n"
+            "可能调用 brew / winget / choco / apt（Linux 可能需要 sudo 密码）。\n"
+            "是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        if self._hfd_install_worker and self._hfd_install_worker.isRunning():
+            self.update_status("正在安装 hfd 依赖，请稍候…")
+            return
+
+        self.hfd_install_btn.setEnabled(False)
+        self.update_status("正在安装 hfd 依赖（aria2 / bash）…")
+
+        worker = _HfdDepsInstallWorker(self)
+        self._hfd_install_worker = worker
+        worker.log_line.connect(self.update_status)
+        worker.finished_ok.connect(self._on_hfd_install_finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _on_hfd_install_finished(self, ok: bool, summary: str) -> None:
+        self._hfd_install_worker = None
+        self._refresh_backend_status()
+        self.update_status(summary, error=not ok)
+        if ok:
+            QMessageBox.information(self, "安装完成", summary)
+        else:
+            QMessageBox.warning(self, "安装未完全成功", summary)
 
     def _save_settings(self):
         """Persist current form values for next launch."""
@@ -1031,13 +1139,24 @@ class MainWindow(QMainWindow):
             ok, reason = hfd_availability()
             if not ok:
                 self.update_status(f"错误：hfd 不可用 — {reason}", error=True)
-                QMessageBox.warning(
-                    self,
-                    "hfd 不可用",
-                    f"{reason}\n\n"
-                    "请安装 aria2c（推荐）或 wget，Windows 还需 Git Bash。\n"
-                    "也可改回「huggingface-hub（内置）」。",
+                box = QMessageBox(self)
+                box.setIcon(QMessageBox.Icon.Warning)
+                box.setWindowTitle("hfd 不可用")
+                box.setText(reason)
+                box.setInformativeText(
+                    "可一键安装依赖（aria2 / bash），或改回 huggingface-hub。\n"
+                    "从 hub 换到 hfd：请先停止当前下载，再选 hfd 点下载；"
+                    "相同保存目录下已下完的文件一般可续传。"
                 )
+                install_btn = None
+                if can_auto_install_hfd_deps() or missing_hfd_deps():
+                    install_btn = box.addButton(
+                        "一键安装依赖", QMessageBox.ButtonRole.AcceptRole
+                    )
+                box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+                box.exec()
+                if install_btn is not None and box.clickedButton() is install_btn:
+                    self.install_hfd_dependencies()
                 return
 
         endpoint = self._current_endpoint_url() or default_endpoint(platform_key)

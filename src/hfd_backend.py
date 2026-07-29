@@ -94,6 +94,224 @@ def hfd_availability() -> tuple[bool, str]:
     return False, "未找到 aria2c 或 wget，请先安装 aria2c 以使用 hfd 高速下载"
 
 
+def missing_hfd_deps() -> list[str]:
+    """Human-readable list of missing pieces for hfd."""
+    missing: list[str] = []
+    if not find_hfd_script():
+        missing.append("内置 hfd.sh 脚本")
+    if not find_bash():
+        missing.append("bash（Windows 需 Git for Windows）")
+    if not find_aria2c() and not find_wget():
+        missing.append("aria2c（推荐）或 wget")
+    return missing
+
+
+def hfd_install_plan() -> tuple[list[list[str]], list[str]]:
+    """Return (shell commands as argv lists, manual tips) to install missing deps.
+
+    Commands are best-effort via brew / winget / choco / scoop / apt / dnf.
+    """
+    cmds: list[list[str]] = []
+    tips: list[str] = []
+    system = platform.system().lower()
+    need_aria = not find_aria2c() and not find_wget()
+    need_bash = not find_bash()
+
+    if need_aria:
+        if system == "darwin":
+            if shutil.which("brew"):
+                cmds.append(["brew", "install", "aria2"])
+            else:
+                tips.append(
+                    "macOS：先安装 Homebrew，再执行 brew install aria2\nhttps://brew.sh"
+                )
+        elif system.startswith("win"):
+            if shutil.which("winget"):
+                cmds.append(
+                    [
+                        "winget",
+                        "install",
+                        "-e",
+                        "--id",
+                        "aria2.aria2",
+                        "--accept-package-agreements",
+                        "--accept-source-agreements",
+                    ]
+                )
+            elif shutil.which("choco"):
+                cmds.append(["choco", "install", "aria2", "-y"])
+            elif shutil.which("scoop"):
+                cmds.append(["scoop", "install", "aria2"])
+            else:
+                tips.append(
+                    "Windows：安装 winget/scoop/choco 后装 aria2，或从\n"
+                    "https://github.com/aria2/aria2/releases 下载并加入 PATH"
+                )
+        else:  # linux
+            if shutil.which("apt-get"):
+                cmds.append(["sudo", "apt-get", "update"])
+                cmds.append(["sudo", "apt-get", "install", "-y", "aria2"])
+            elif shutil.which("dnf"):
+                cmds.append(["sudo", "dnf", "install", "-y", "aria2"])
+            elif shutil.which("pacman"):
+                cmds.append(["sudo", "pacman", "-S", "--noconfirm", "aria2"])
+            elif shutil.which("zypper"):
+                cmds.append(["sudo", "zypper", "install", "-y", "aria2"])
+            else:
+                tips.append("Linux：请用发行版包管理器安装 aria2（aria2c）")
+
+    if need_bash and system.startswith("win"):
+        if shutil.which("winget"):
+            cmds.append(
+                [
+                    "winget",
+                    "install",
+                    "-e",
+                    "--id",
+                    "Git.Git",
+                    "--accept-package-agreements",
+                    "--accept-source-agreements",
+                ]
+            )
+        elif shutil.which("choco"):
+            cmds.append(["choco", "install", "git", "-y"])
+        else:
+            tips.append(
+                "Windows 还需 bash：安装 Git for Windows\n"
+                "https://git-scm.com/download/win"
+            )
+
+    if not find_hfd_script():
+        tips.append("未找到内置 hfd.sh，请重新安装/解压本程序完整包")
+
+    if not cmds and not tips and missing_hfd_deps():
+        tips.append("请手动安装缺失依赖后重启本程序")
+
+    return cmds, tips
+
+
+def can_auto_install_hfd_deps() -> bool:
+    cmds, _tips = hfd_install_plan()
+    return bool(cmds)
+
+
+def run_hfd_deps_install(
+    log_cb=None,
+    *,
+    timeout_per_cmd: int = 600,
+) -> tuple[bool, str]:
+    """Run install plan commands. Returns (success, summary)."""
+    missing_before = missing_hfd_deps()
+    if not missing_before:
+        return True, "依赖已齐全，无需安装"
+
+    cmds, tips = hfd_install_plan()
+    if not cmds:
+        msg = "无法自动安装：\n" + ("\n".join(tips) if tips else "未找到包管理器")
+        if log_cb:
+            log_cb(msg)
+        return False, msg
+
+    logs: list[str] = []
+    for cmd in cmds:
+        line = "$ " + " ".join(cmd)
+        logs.append(line)
+        if log_cb:
+            log_cb(line)
+        try:
+            run_kwargs: dict = {
+                "capture_output": True,
+                "text": True,
+                "timeout": timeout_per_cmd,
+            }
+            if platform.system().lower().startswith("win"):
+                run_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            proc = subprocess.run(cmd, **run_kwargs)
+            out = (proc.stdout or "").strip()
+            err = (proc.stderr or "").strip()
+            if out:
+                for part in out.splitlines()[-20:]:
+                    logs.append(part)
+                    if log_cb:
+                        log_cb(part)
+            if err:
+                for part in err.splitlines()[-10:]:
+                    logs.append(part)
+                    if log_cb:
+                        log_cb(part)
+            if proc.returncode != 0:
+                msg = f"命令失败（退出码 {proc.returncode}）：{' '.join(cmd)}"
+                logs.append(msg)
+                if log_cb:
+                    log_cb(msg)
+                # Continue other commands (e.g. git after aria2)
+        except subprocess.TimeoutExpired:
+            msg = f"命令超时：{' '.join(cmd)}"
+            logs.append(msg)
+            if log_cb:
+                log_cb(msg)
+            return False, msg
+        except FileNotFoundError:
+            msg = f"找不到命令：{cmd[0]}"
+            logs.append(msg)
+            if log_cb:
+                log_cb(msg)
+            return False, msg
+        except Exception as exc:
+            msg = f"执行失败：{exc}"
+            logs.append(msg)
+            if log_cb:
+                log_cb(msg)
+            return False, msg
+
+    # PATH may not refresh in current process — re-check which()
+    # On Windows, winget installs often need new shell; try common locations.
+    _refresh_path_hints()
+
+    missing_after = missing_hfd_deps()
+    if not missing_after:
+        ok_msg = "安装完成，hfd 依赖已就绪。若仍提示不可用，请完全退出后重开本程序。"
+        if log_cb:
+            log_cb(ok_msg)
+        return True, ok_msg
+
+    tip_txt = "\n".join(tips) if tips else ""
+    fail = (
+        "安装命令已执行，但仍缺："
+        + "、".join(missing_after)
+        + "。请关闭本程序后重新打开（刷新 PATH），"
+        "或按提示手动安装。\n" + tip_txt
+    )
+    if log_cb:
+        log_cb(fail)
+    return False, fail
+
+
+def _refresh_path_hints() -> None:
+    """Append common install dirs so shutil.which can see new binaries."""
+    extras: list[str] = []
+    system = platform.system().lower()
+    if system.startswith("win"):
+        extras.extend(
+            [
+                r"C:\Program Files\Git\bin",
+                r"C:\Program Files (x86)\Git\bin",
+                os.path.expandvars(r"%LOCALAPPDATA%\Programs\Git\bin"),
+                r"C:\ProgramData\chocolatey\bin",
+                os.path.expandvars(r"%USERPROFILE%\scoop\shims"),
+                r"C:\Program Files\aria2",
+            ]
+        )
+    elif system == "darwin":
+        extras.extend(["/opt/homebrew/bin", "/usr/local/bin"])
+    path = os.environ.get("PATH", "")
+    parts = path.split(os.pathsep)
+    for e in extras:
+        if e and e not in parts and os.path.isdir(e):
+            parts.insert(0, e)
+    os.environ["PATH"] = os.pathsep.join(parts)
+
+
 def ensure_hfd_executable(script: Path) -> None:
     try:
         mode = script.stat().st_mode
