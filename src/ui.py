@@ -30,7 +30,6 @@ from PyQt6.QtWidgets import (
 
 from .app_logging import get_last_crash_log_path, get_log_dir, get_runtime_log_path
 from .app_settings import load_form_settings, save_form_settings
-from .download_progress_panel import DownloadProgressPanel
 from .endpoints import (
     build_endpoint_chain,
     default_endpoint,
@@ -43,7 +42,7 @@ from .hfd_backend import (
     BACKEND_HUB,
     hfd_availability,
 )
-from .net_monitor_panel import NetMonitorPanel
+from .monitor_window import MonitorWindow
 from .proxy_env import normalize_proxy
 from .resource_utils import get_asset_path
 from .unified_downloader import UnifiedDownloadWorker
@@ -202,12 +201,18 @@ class MainWindow(QMainWindow):
         self.open_logs_btn.setFixedHeight(standard_button_height)
         self.open_logs_btn.setToolTip("打开运行日志 / 崩溃日志目录")
         self.open_logs_btn.clicked.connect(self.open_log_folder)
+        self.monitor_btn = QPushButton("📊 监控面板")
+        self.monitor_btn.setMaximumWidth(150)
+        self.monitor_btn.setFixedHeight(standard_button_height)
+        self.monitor_btn.setToolTip("打开右侧悬浮监控窗（网速 / 磁盘 / 文件进度）")
+        self.monitor_btn.clicked.connect(self.toggle_monitor_window)
 
         links_layout.addWidget(self.browse_models_btn)
         links_layout.addWidget(self.browse_datasets_btn)
         links_layout.addWidget(self.get_token_btn)
         links_layout.addWidget(self.check_update_btn)
         links_layout.addWidget(self.open_logs_btn)
+        links_layout.addWidget(self.monitor_btn)
         links_layout.addStretch()
 
         guide_content_layout.addLayout(links_layout)
@@ -425,13 +430,10 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(self.stop_button)
         layout.addLayout(button_layout)
 
-        self.net_monitor_panel = NetMonitorPanel()
-        self.net_monitor_panel.prefs_changed.connect(self._save_settings)
-        layout.addWidget(self.net_monitor_panel)
-
-        self.file_progress_panel = DownloadProgressPanel()
-        self.file_progress_panel.prefs_changed.connect(self._save_settings)
-        layout.addWidget(self.file_progress_panel)
+        # Monitors live in a floating side window (not embedded — keeps main UI clean).
+        self._monitor_window = MonitorWindow(self)
+        self._monitor_window.prefs_changed.connect(self._save_settings)
+        self._monitor_window.closed.connect(self._on_monitor_window_closed)
 
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
@@ -503,8 +505,7 @@ class MainWindow(QMainWindow):
         help_section_height = 220
         form_fields_height = 270
         buttons_height = 40
-        net_monitor_height = 220
-        log_minimum_height = 100
+        log_minimum_height = 120
         footer_height = 40
         margins_spacing = 40
 
@@ -513,14 +514,13 @@ class MainWindow(QMainWindow):
             + help_section_height
             + form_fields_height
             + buttons_height
-            + net_monitor_height
             + log_minimum_height
             + footer_height
             + margins_spacing
         )
 
         self.setMinimumHeight(total_height)
-        self.setMinimumWidth(860)
+        self.setMinimumWidth(800)
 
     def _load_settings(self):
         """Restore last-used form values."""
@@ -588,16 +588,14 @@ class MainWindow(QMainWindow):
         self._refresh_backend_status()
 
         hist = int(data.get("net_monitor_history_sec") or 180)
-        self.net_monitor_panel.set_history_seconds(max(60, min(600, hist)))
-        self.net_monitor_panel.set_selected_interface(
-            str(data.get("net_monitor_iface") or "")
-        )
-        self.net_monitor_panel.set_expanded(
-            bool(data.get("net_monitor_expanded", True))
-        )
-        self.file_progress_panel.set_expanded(
-            bool(data.get("file_progress_expanded", True))
-        )
+        mw = self._monitor_window
+        mw.net_panel.set_history_seconds(max(60, min(600, hist)))
+        mw.net_panel.set_selected_interface(str(data.get("net_monitor_iface") or ""))
+        mw.net_panel.set_expanded(True)
+        mw.file_panel.set_expanded(True)
+        if data.get("monitor_window_open"):
+            # Defer so main geometry is ready
+            QTimer.singleShot(200, self.show_monitor_window)
 
     def _platform_key(self) -> str:
         return (
@@ -674,11 +672,27 @@ class MainWindow(QMainWindow):
             hub_max_workers=self.hub_workers_spin.value(),
             hfd_threads=self.hfd_threads_spin.value(),
             hfd_jobs=self.hfd_jobs_spin.value(),
-            net_monitor_expanded=self.net_monitor_panel.is_expanded(),
-            net_monitor_iface=self.net_monitor_panel.selected_interface(),
-            net_monitor_history_sec=self.net_monitor_panel.history_seconds(),
-            file_progress_expanded=self.file_progress_panel.is_expanded(),
+            net_monitor_expanded=True,
+            net_monitor_iface=self._monitor_window.net_panel.selected_interface(),
+            net_monitor_history_sec=self._monitor_window.net_panel.history_seconds(),
+            file_progress_expanded=True,
+            monitor_window_open=self._monitor_window.isVisible(),
         )
+
+    def show_monitor_window(self) -> None:
+        self._monitor_window.show_and_place()
+        self.monitor_btn.setText("📊 监控面板 ✓")
+
+    def toggle_monitor_window(self) -> None:
+        if self._monitor_window.isVisible():
+            self._monitor_window.hide()
+            self.monitor_btn.setText("📊 监控面板")
+        else:
+            self.show_monitor_window()
+
+    def _on_monitor_window_closed(self) -> None:
+        self.monitor_btn.setText("📊 监控面板")
+        self._save_settings()
 
     def closeEvent(self, event):
         self._save_settings()
@@ -687,11 +701,8 @@ class MainWindow(QMainWindow):
         self._retry_timer.stop()
         self._stall_watch_timer.stop()
         try:
-            self.net_monitor_panel.stop()
-        except Exception:
-            pass
-        try:
-            self.file_progress_panel.reset()
+            self._monitor_window.stop()
+            self._monitor_window.hide()
         except Exception:
             pass
         if self._update_worker and self._update_worker.isRunning():
@@ -1089,17 +1100,18 @@ class MainWindow(QMainWindow):
         if self.stall_restart_checkbox.isChecked():
             self._stall_watch_timer.start()
 
-        # Bind disk free-space + refresh file progress on each job start
+        # Bind monitors to this download job
         try:
-            self.net_monitor_panel.set_watch_path(params.get("save_path"))
+            save_path = params.get("save_path")
+            repo_id = params.get("repo_id")
+            self._monitor_window.set_watch_path(save_path)
+            self._monitor_window.file_panel.set_scan_root(save_path, repo_id=repo_id)
+            # Auto-open monitor when download starts
+            if not self._monitor_window.isVisible():
+                self.show_monitor_window()
+            self._monitor_window.start_session(reset=bool(clear_log))
         except Exception:
-            pass
-        if clear_log:
-            try:
-                self.file_progress_panel.reset()
-                self.net_monitor_panel.mark_download_session()
-            except Exception:
-                pass
+            logger.exception("Failed to prepare monitor window")
 
         if clear_log:
             self.log_text.clear()
@@ -1194,6 +1206,10 @@ class MainWindow(QMainWindow):
         self._pending_stall_restart = False
         self._retry_timer.stop()
         self._stall_watch_timer.stop()
+        try:
+            self._monitor_window.stop_session()
+        except Exception:
+            pass
         self.update_status("正在停止下载（并取消自动重试）...")
         if self.download_worker and self.download_worker.isRunning():
             self.stop_button.setEnabled(False)
@@ -1379,7 +1395,7 @@ class MainWindow(QMainWindow):
         if self.download_worker and self.download_worker.isRunning():
             self._touch_download_activity(text)
         try:
-            self.file_progress_panel.feed_log(text)
+            self._monitor_window.feed_log(text)
         except Exception:
             pass
         self.log_text.append(text)
@@ -1407,6 +1423,10 @@ class MainWindow(QMainWindow):
         self._retry_timer.stop()
         self._stall_watch_timer.stop()
         self._pending_stall_restart = False
+        try:
+            self._monitor_window.stop_session()
+        except Exception:
+            pass
         attempts = self._retry_attempt
         self._retry_attempt = 0
         self._set_downloading_ui(False)
@@ -1434,6 +1454,10 @@ class MainWindow(QMainWindow):
             self._retry_timer.stop()
             self._stall_watch_timer.stop()
             self._pending_stall_restart = False
+            try:
+                self._monitor_window.stop_session()
+            except Exception:
+                pass
             self._set_downloading_ui(False)
             self.update_status("⏹️ 已停止下载")
             self.log_text.append("⏹️ 已停止下载")

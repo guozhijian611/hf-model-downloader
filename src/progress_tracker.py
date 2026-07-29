@@ -1,19 +1,22 @@
-"""Parse huggingface-hub / tqdm progress log lines into file-level status."""
+"""Parse huggingface-hub / tqdm progress + scan local incomplete files."""
 
 from __future__ import annotations
 
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 # "name:  12%|...| 1.2G/10G [00:01<00:10, 100MB/s]"
+# Bar chars may be ascii or unicode blocks; make the middle optional.
 _RE_TQDM = re.compile(
-    r"^(?P<name>.+?):\s+(?P<pct>\d+(?:\.\d+)?)%\s*\|"
-    r"[^|]*\|?\s*"
+    r"^(?P<name>.+?):\s+(?P<pct>\d+(?:\.\d+)?)%\s*"
+    r"(?:\|[^|]*\|)?\s*"
     r"(?P<done>[\d.,]+\s*[kKmMgGtTpPeE]?i?[bB]?)"
     r"\s*/\s*"
     r"(?P<total>[\d.,]+\s*[kKmMgGtTpPeE]?i?[bB]?)"
     r"(?:\s*\[(?P<bracket>[^\]]*)\])?",
+    re.IGNORECASE,
 )
 
 # Fallback without bar: "name: 50% 1G/2G"
@@ -22,10 +25,22 @@ _RE_SIMPLE = re.compile(
     r"(?P<done>[\d.,]+\s*[kKmMgGtTpPeE]?i?[bB]?)"
     r"\s*/\s*"
     r"(?P<total>[\d.,]+\s*[kKmMgGtTpPeE]?i?[bB]?)",
+    re.IGNORECASE,
+)
+
+# Bare incomplete-total without requiring colon name carefully
+_RE_LOOSE_PROGRESS = re.compile(
+    r"(?P<pct>\d+(?:\.\d+)?)%\s*"
+    r"(?:\|[^|]*\|)?\s*"
+    r"(?P<done>[\d.,]+\s*[kKmMgGtTpPeE]?i?[bB]?)"
+    r"\s*/\s*"
+    r"(?P<total>[\d.,]+\s*[kKmMgGtTpPeE]?i?[bB]?)"
+    r"(?:\s*\[(?P<bracket>[^\]]*)\])?",
+    re.IGNORECASE,
 )
 
 _RE_RATE = re.compile(
-    r"([\d.,]+)\s*([kKmMgGtTpPeE]?i?)[bB]/s",
+    r"([\d.,]+)\s*([kKmMgGtTpPeE]?i?)[bB]?/s",
     re.IGNORECASE,
 )
 
@@ -33,6 +48,23 @@ _RE_FETCHING = re.compile(
     r"Fetching\s+(?P<n>\d+)\s+files",
     re.IGNORECASE,
 )
+
+# "Fetching 50 files:  20%|..| 10/50"
+_RE_FETCHING_COUNT = re.compile(
+    r"Fetching\s+(?P<total>\d+)\s+files:\s*"
+    r"(?P<pct>\d+(?:\.\d+)?)%\s*"
+    r"(?:\|[^|]*\|\s*)?"
+    r"(?P<done>\d+)\s*/\s*(?P<total2>\d+)",
+    re.IGNORECASE,
+)
+
+_SKIP_DIR_NAMES = {
+    ".git",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "node_modules",
+}
 
 
 def parse_size_to_bytes(text: str) -> int | None:
@@ -47,16 +79,12 @@ def parse_size_to_bytes(text: str) -> int | None:
         s,
     )
     if not m:
-        # pure number
         try:
             return int(float(s))
         except ValueError:
             return None
     value = float(m.group(1))
     unit = (m.group(2) or "").upper()
-    binary = bool(m.group(3))
-    base = 1024.0 if binary or unit in {"", "K", "M", "G", "T", "P"} else 1000.0
-    # tqdm / HF almost always use 1024-based abbreviations (MB, GB)
     base = 1024.0
     mult = {
         "": 1.0,
@@ -92,6 +120,7 @@ class FileProgress:
     status: str = "下载中"  # 下载中 / 完成 / 总体
     updated_at: float = field(default_factory=time.time)
     is_overall: bool = False
+    source: str = "log"  # log | disk
 
     @property
     def size_text(self) -> str:
@@ -105,7 +134,7 @@ class FileProgress:
 
 
 class DownloadProgressTracker:
-    """Track overall + per-file progress parsed from log lines."""
+    """Track overall + per-file progress from logs and disk scan."""
 
     OVERALL_NAMES = (
         "downloading",
@@ -113,15 +142,19 @@ class DownloadProgressTracker:
         "fetching",
         "总体",
         "total",
+        "files",
     )
 
-    def __init__(self, *, stale_seconds: float = 90.0) -> None:
+    def __init__(self, *, stale_seconds: float = 120.0) -> None:
         self.stale_seconds = stale_seconds
         self.files: dict[str, FileProgress] = {}
         self.overall: FileProgress | None = None
         self.expected_files: int | None = None
         self.completed_count = 0
         self._seen_complete: set[str] = set()
+        self._disk_prev: dict[str, tuple[int, float]] = {}
+        self.scan_root: str | None = None
+        self.repo_subdir: str | None = None  # optional model folder name
 
     def reset(self) -> None:
         self.files.clear()
@@ -129,16 +162,25 @@ class DownloadProgressTracker:
         self.expected_files = None
         self.completed_count = 0
         self._seen_complete.clear()
+        self._disk_prev.clear()
+
+    def set_scan_root(self, path: str | None, repo_id: str | None = None) -> None:
+        self.scan_root = (path or "").strip() or None
+        if repo_id:
+            # download_core saves under save_path / last_segment
+            self.repo_subdir = repo_id.strip().split("/")[-1]
+        else:
+            self.repo_subdir = None
 
     def feed(self, message: str) -> bool:
         """Ingest one log/status line. Returns True if state changed."""
         if not message:
             return False
-        # strip log prefixes like "12:34:56 [信息] "
         text = message.strip()
+        # strip log prefixes like "12:34:56 [信息] "
         text = re.sub(r"^\d{1,2}:\d{2}:\d{2}\s+\[[^\]]+\]\s*", "", text)
-        text = text.strip()
-        # tqdm control chars
+        # strip leading icons / info markers
+        text = re.sub(r"^[ℹ️❌⏹️✅⚠️🔧\s]+", "", text)
         text = text.replace("\r", "").strip()
         if not text:
             return False
@@ -149,8 +191,43 @@ class DownloadProgressTracker:
             self.expected_files = int(m_fetch.group("n"))
             changed = True
 
+        m_fc = _RE_FETCHING_COUNT.search(text)
+        if m_fc:
+            try:
+                self.expected_files = int(m_fc.group("total"))
+                done_n = int(m_fc.group("done"))
+                self.completed_count = max(self.completed_count, done_n)
+                changed = True
+            except ValueError:
+                pass
+            # "Fetching N files: x%| | a/b" is file-count progress, not byte sizes.
+            return changed
+
+        # Pure "Fetching N files" without counts — don't parse as tqdm sizes.
+        if re.match(r"^Fetching\s+\d+\s+files\s*$", text, re.I):
+            return changed
+
         parsed = self._parse_tqdm(text)
         if not parsed:
+            # Last resort: if line mentions incomplete total / Downloading
+            if re.search(r"incomplete\s*total|Downloading", text, re.I):
+                loose = _RE_LOOSE_PROGRESS.search(text)
+                if loose:
+                    try:
+                        pct = float(loose.group("pct"))
+                    except ValueError:
+                        return changed
+                    done = parse_size_to_bytes(loose.group("done")) or 0
+                    total = parse_size_to_bytes(loose.group("total")) or 0
+                    rate = parse_rate_to_bps(loose.group("bracket") or text)
+                    self._set_overall(
+                        "Downloading (incomplete total…)",
+                        pct,
+                        done,
+                        total,
+                        rate,
+                    )
+                    return True
             return changed
 
         name, pct, done, total, rate = parsed
@@ -158,42 +235,109 @@ class DownloadProgressTracker:
         is_overall = self._is_overall_name(name)
 
         if is_overall:
-            fp = self.overall or FileProgress(name=name, is_overall=True)
-            fp.name = name
-            fp.pct = pct
-            fp.done_bytes = done
-            fp.total_bytes = total
-            if rate is not None:
-                fp.rate_bps = rate
-            fp.updated_at = now
-            fp.status = "完成" if pct >= 100 else "下载中"
-            fp.is_overall = True
-            self.overall = fp
+            self._set_overall(name, pct, done, total, rate)
             return True
 
-        # Per-file
+        # Per-file from log
         short = self._short_name(name)
-        fp = self.files.get(short) or FileProgress(name=short)
-        prev_pct = fp.pct
+        fp = self.files.get(short) or FileProgress(name=short, source="log")
         fp.pct = pct
         fp.done_bytes = done
         fp.total_bytes = total
         if rate is not None:
             fp.rate_bps = rate
         fp.updated_at = now
-        if pct >= 99.9:
+        fp.source = "log"
+        if pct >= 99.9 or (total > 0 and done >= total):
             fp.status = "完成"
             fp.pct = 100.0
             if short not in self._seen_complete:
                 self._seen_complete.add(short)
-                self.completed_count = len(self._seen_complete)
+                self.completed_count = max(
+                    self.completed_count, len(self._seen_complete)
+                )
         else:
             fp.status = "下载中"
         self.files[short] = fp
-        # drop very stale inactive entries only when many files
-        if len(self.files) > 80:
+        if len(self.files) > 100:
             self._prune_stale(now)
-        return True if prev_pct != pct or rate else True
+        return True
+
+    def scan_directory(self) -> bool:
+        """Scan save dir for .incomplete / active partial files."""
+        root = self._resolve_scan_dir()
+        if root is None or not root.is_dir():
+            return False
+
+        now = time.time()
+        found_keys: set[str] = set()
+        changed = False
+        try:
+            candidates = self._iter_incomplete_files(root)
+        except OSError:
+            return False
+
+        for path, done_bytes in candidates:
+            rel = self._rel_name(root, path)
+            key = self._short_name(rel)
+            found_keys.add(key)
+
+            # Estimate rate from size deltas
+            rate = 0.0
+            prev = self._disk_prev.get(key)
+            if prev is not None:
+                prev_size, prev_t = prev
+                dt = max(1e-3, now - prev_t)
+                delta = done_bytes - prev_size
+                if delta >= 0:
+                    rate = delta / dt
+            self._disk_prev[key] = (done_bytes, now)
+
+            # Prefer not to overwrite fresher log entries with lower info
+            existing = self.files.get(key)
+            if (
+                existing
+                and existing.source == "log"
+                and (now - existing.updated_at) < 5
+            ):
+                continue
+
+            fp = existing or FileProgress(name=key, source="disk")
+            fp.done_bytes = done_bytes
+            # unknown total for incomplete unless name has size — leave 0
+            if fp.total_bytes > 0:
+                fp.pct = min(99.9, 100.0 * done_bytes / max(1, fp.total_bytes))
+            else:
+                fp.pct = 0.0
+            if rate > 0:
+                fp.rate_bps = rate
+            fp.status = "下载中"
+            fp.updated_at = now
+            fp.source = "disk"
+            self.files[key] = fp
+            changed = True
+
+        # Mark disk-sourced files that disappeared as completed
+        for key, fp in list(self.files.items()):
+            if fp.source != "disk":
+                continue
+            if key in found_keys:
+                continue
+            if fp.status == "下载中" and (now - fp.updated_at) > 3:
+                # file left incomplete state — likely finished rename
+                fp.status = "完成"
+                fp.pct = 100.0
+                fp.updated_at = now
+                if key not in self._seen_complete:
+                    self._seen_complete.add(key)
+                    self.completed_count = max(
+                        self.completed_count, len(self._seen_complete)
+                    )
+                changed = True
+
+        if len(self.files) > 100:
+            self._prune_stale(now)
+        return changed
 
     def active_files(self) -> list[FileProgress]:
         now = time.time()
@@ -202,21 +346,40 @@ class DownloadProgressTracker:
             for f in self.files.values()
             if f.status == "下载中" and (now - f.updated_at) <= self.stale_seconds
         ]
-        active.sort(key=lambda x: (-x.rate_bps, x.name))
+        active.sort(key=lambda x: (-x.rate_bps, -x.done_bytes, x.name))
         return active
 
-    def recent_files(self, limit: int = 40) -> list[FileProgress]:
-        """Active first, then recently updated completed."""
+    def recent_files(self, limit: int = 50) -> list[FileProgress]:
+        """Active first, then recently updated. Include overall as first row."""
         now = time.time()
         items = list(self.files.values())
         items.sort(
             key=lambda f: (
                 0 if f.status == "下载中" else 1,
-                -(f.updated_at),
+                -f.updated_at,
             )
         )
-        # hide ancient completed
-        out = []
+        out: list[FileProgress] = []
+        # Always surface overall as a synthetic first row when present
+        if self.overall:
+            o = FileProgress(
+                name="【总体】" + (self.overall.name[:40] if self.overall.name else ""),
+                pct=self.overall.pct,
+                done_bytes=self.overall.done_bytes,
+                total_bytes=self.overall.total_bytes,
+                rate_bps=self.overall.rate_bps,
+                status=self.overall.status,
+                updated_at=self.overall.updated_at,
+                is_overall=True,
+                source="log",
+            )
+            # Prefer computed pct if tqdm rounded to 0
+            if o.total_bytes > 0 and o.done_bytes > 0:
+                computed = 100.0 * o.done_bytes / o.total_bytes
+                if o.pct < 0.05 and computed >= 0.05:
+                    o.pct = computed
+            out.append(o)
+
         for f in items:
             if f.status == "下载中" or (now - f.updated_at) < 600:
                 out.append(f)
@@ -227,6 +390,8 @@ class DownloadProgressTracker:
     def summary(self) -> dict:
         active = self.active_files()
         total_rate = sum(f.rate_bps for f in active)
+        if self.overall and self.overall.rate_bps and not total_rate:
+            total_rate = self.overall.rate_bps
         return {
             "active": len(active),
             "completed": self.completed_count,
@@ -236,6 +401,113 @@ class DownloadProgressTracker:
             "overall": self.overall,
         }
 
+    # ----- internals -----
+
+    def _set_overall(
+        self,
+        name: str,
+        pct: float,
+        done: int,
+        total: int,
+        rate: float | None,
+    ) -> None:
+        now = time.time()
+        fp = self.overall or FileProgress(name=name, is_overall=True)
+        fp.name = name
+        # Recompute pct if tqdm shows 0% but bytes say otherwise
+        if total > 0 and done > 0:
+            computed = 100.0 * done / total
+            if pct < 0.05 and computed >= 0.05:
+                pct = computed
+        fp.pct = pct
+        fp.done_bytes = done
+        fp.total_bytes = total
+        if rate is not None:
+            fp.rate_bps = rate
+        fp.updated_at = now
+        fp.status = "完成" if pct >= 100 else "下载中"
+        fp.is_overall = True
+        self.overall = fp
+
+    def _resolve_scan_dir(self) -> Path | None:
+        if not self.scan_root:
+            return None
+        root = Path(self.scan_root)
+        if self.repo_subdir:
+            candidate = root / self.repo_subdir
+            if candidate.is_dir():
+                return candidate
+        return root if root.is_dir() else None
+
+    def _iter_incomplete_files(self, root: Path) -> list[tuple[Path, int]]:
+        """Find incomplete / partial download files under root."""
+        out: list[tuple[Path, int]] = []
+        # Cap walk cost for huge datasets
+        max_files = 400
+        count = 0
+        for dirpath, dirnames, filenames in __import__("os").walk(root):
+            # prune noisy dirs
+            dirnames[:] = [
+                d
+                for d in dirnames
+                if d not in _SKIP_DIR_NAMES and not d.startswith(".")
+            ]
+            # but allow .cache for hf incomplete
+            base = Path(dirpath)
+            # re-add .cache/huggingface if present
+            if (base / ".cache").is_dir() and ".cache" not in dirnames:
+                dirnames.append(".cache")
+
+            for name in filenames:
+                count += 1
+                if count > 50_000:
+                    return out
+                lower = name.lower()
+                is_incomplete = (
+                    lower.endswith(".incomplete")
+                    or lower.endswith(".aria2")
+                    or lower.endswith(".tmp")
+                    or lower.endswith(".part")
+                    or ".incomplete." in lower
+                )
+                if not is_incomplete:
+                    # hf download temp: *.lock skip
+                    if lower.endswith(".lock"):
+                        continue
+                    # also show recently large growing files in download cache
+                    if ".cache" in Path(dirpath).parts and lower.endswith(
+                        (".bin", ".safetensors", ".gguf", ".parquet", ".arrow", ".zip")
+                    ):
+                        pass  # could include; skip to reduce noise
+                    else:
+                        continue
+                path = Path(dirpath) / name
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    continue
+                if size <= 0:
+                    continue
+                out.append((path, size))
+                if len(out) >= max_files:
+                    return out
+        # Sort by size desc so biggest active shards surface first
+        out.sort(key=lambda x: -x[1])
+        return out
+
+    @staticmethod
+    def _rel_name(root: Path, path: Path) -> str:
+        try:
+            rel = str(path.relative_to(root))
+        except ValueError:
+            rel = path.name
+        # strip incomplete suffix for display
+        for suf in (".incomplete", ".aria2", ".tmp", ".part"):
+            if rel.lower().endswith(suf):
+                rel = rel[: -len(suf)]
+                break
+        return rel.replace("\\", "/")
+
     def _prune_stale(self, now: float) -> None:
         stale = [
             k
@@ -244,20 +516,23 @@ class DownloadProgressTracker:
         ]
         for k in stale[: max(0, len(self.files) - 60)]:
             self.files.pop(k, None)
+            self._disk_prev.pop(k, None)
 
     @staticmethod
     def _short_name(name: str) -> str:
         name = name.strip()
-        # strip long path, keep last 2 segments
         parts = name.replace("\\", "/").split("/")
-        if len(parts) > 2:
-            return "/".join(parts[-2:])
+        if len(parts) > 3:
+            return "/".join(parts[-3:])
         return name
 
     @classmethod
     def _is_overall_name(cls, name: str) -> bool:
         lower = name.lower()
-        return any(k in lower for k in cls.OVERALL_NAMES)
+        if any(k in lower for k in cls.OVERALL_NAMES):
+            return True
+        # "Fetching 12 files" style already handled; bare "Files"
+        return lower.startswith("download")
 
     def _parse_tqdm(
         self, text: str
@@ -266,8 +541,7 @@ class DownloadProgressTracker:
         if not m:
             return None
         name = m.group("name").strip()
-        # strip emoji / noise prefixes sometimes present
-        name = re.sub(r"^[\s\|#]+", "", name)
+        name = re.sub(r"^[\s\|#ℹ️]+", "", name)
         try:
             pct = float(m.group("pct"))
         except ValueError:

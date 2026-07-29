@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QProgressBar,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -20,7 +22,7 @@ from .progress_tracker import DownloadProgressTracker, FileProgress
 
 
 class DownloadProgressPanel(QFrame):
-    """Shows overall + per-file progress parsed from download logs."""
+    """Shows overall + per-file progress parsed from download logs / disk."""
 
     prefs_changed = pyqtSignal()
 
@@ -28,15 +30,32 @@ class DownloadProgressPanel(QFrame):
         super().__init__(parent)
         self.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Raised)
         self.setStyleSheet(
-            "DownloadProgressPanel { background: #fafafa; border: 1px solid #ddd; "
-            "border-radius: 6px; }"
+            """
+            DownloadProgressPanel {
+                background: #ffffff;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+            }
+            QTableWidget {
+                border: 1px solid #eee;
+                border-radius: 4px;
+                gridline-color: #f0f0f0;
+                background: #fafafa;
+            }
+            QHeaderView::section {
+                background: #f5f5f5;
+                padding: 4px 6px;
+                border: none;
+                border-bottom: 1px solid #e0e0e0;
+                font-weight: 600;
+            }
+            """
         )
         self.tracker = DownloadProgressTracker()
-        self._dirty = False
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(8, 6, 8, 8)
-        root.setSpacing(4)
+        root.setContentsMargins(10, 8, 10, 10)
+        root.setSpacing(6)
 
         header = QHBoxLayout()
         self.toggle_btn = QPushButton("▼ 文件进度")
@@ -44,13 +63,14 @@ class DownloadProgressPanel(QFrame):
         self.toggle_btn.setCheckable(True)
         self.toggle_btn.setChecked(True)
         self.toggle_btn.setStyleSheet(
-            "QPushButton { font-weight: bold; text-align: left; border: none; }"
+            "QPushButton { font-weight: 600; text-align: left; border: none; "
+            "font-size: 13px; }"
         )
         self.toggle_btn.toggled.connect(self._on_toggle)
         header.addWidget(self.toggle_btn)
 
-        self.summary_label = QLabel("等待下载日志…")
-        self.summary_label.setStyleSheet("color: #555; font-size: 12px;")
+        self.summary_label = QLabel("等待下载…")
+        self.summary_label.setStyleSheet("color: #666; font-size: 12px;")
         self.summary_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -65,14 +85,37 @@ class DownloadProgressPanel(QFrame):
         self.body = QWidget()
         body_layout = QVBoxLayout(self.body)
         body_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.setSpacing(4)
+        body_layout.setSpacing(6)
 
         self.overall_label = QLabel("总体：—")
-        self.overall_label.setStyleSheet("font-weight: bold; font-size: 12px;")
+        self.overall_label.setStyleSheet("font-weight: 600; font-size: 12px;")
         self.overall_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
         body_layout.addWidget(self.overall_label)
+
+        self.overall_bar = QProgressBar()
+        self.overall_bar.setRange(0, 1000)
+        self.overall_bar.setValue(0)
+        self.overall_bar.setTextVisible(True)
+        self.overall_bar.setFormat("%p%")
+        self.overall_bar.setFixedHeight(18)
+        self.overall_bar.setStyleSheet(
+            """
+            QProgressBar {
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                background: #f0f0f0;
+                text-align: center;
+                font-size: 11px;
+            }
+            QProgressBar::chunk {
+                background: #43a047;
+                border-radius: 3px;
+            }
+            """
+        )
+        body_layout.addWidget(self.overall_bar)
 
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(
@@ -82,8 +125,8 @@ class DownloadProgressPanel(QFrame):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setAlternatingRowColors(True)
-        self.table.setMaximumHeight(180)
-        self.table.setMinimumHeight(100)
+        self.table.setShowGrid(False)
+        self.table.setMinimumHeight(140)
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -91,6 +134,17 @@ class DownloadProgressPanel(QFrame):
         hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         hh.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         body_layout.addWidget(self.table)
+
+        self.empty_hint = QLabel(
+            "尚无分文件信息。\n"
+            "· 总体进度来自日志 incomplete total\n"
+            "· 分文件来自日志 或 扫描目录中的 *.incomplete"
+        )
+        self.empty_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_hint.setStyleSheet("color: #999; font-size: 11px; padding: 12px;")
+        self.empty_hint.setWordWrap(True)
+        body_layout.addWidget(self.empty_hint)
+
         root.addWidget(self.body)
 
     def is_expanded(self) -> bool:
@@ -99,15 +153,23 @@ class DownloadProgressPanel(QFrame):
     def set_expanded(self, expanded: bool) -> None:
         self.toggle_btn.setChecked(bool(expanded))
 
+    def set_scan_root(self, path: str | None, repo_id: str | None = None) -> None:
+        self.tracker.set_scan_root(path, repo_id=repo_id)
+
+    def scan_directory(self) -> None:
+        if self.tracker.scan_directory():
+            self.refresh_view()
+
     def reset(self) -> None:
         self.tracker.reset()
         self.table.setRowCount(0)
         self.overall_label.setText("总体：—")
-        self.summary_label.setText("等待下载日志…")
+        self.overall_bar.setValue(0)
+        self.summary_label.setText("等待下载…")
+        self.empty_hint.setVisible(True)
 
     def feed_log(self, message: str) -> None:
         if self.tracker.feed(message):
-            self._dirty = True
             self.refresh_view()
 
     def refresh_view(self) -> None:
@@ -115,48 +177,59 @@ class DownloadProgressPanel(QFrame):
         overall: FileProgress | None = summary["overall"]
         if overall:
             rate = format_rate(overall.rate_bps) if overall.rate_bps else "—"
+            pct = overall.pct
+            if overall.total_bytes > 0 and overall.done_bytes > 0:
+                computed = 100.0 * overall.done_bytes / overall.total_bytes
+                if pct < 0.05 and computed >= 0.05:
+                    pct = computed
             self.overall_label.setText(
-                f"总体：{overall.pct:.1f}%  "
-                f"{overall.size_text}  "
-                f"速度 {rate}  "
-                f"[{overall.status}]"
+                f"总体：{pct:.2f}%  {overall.size_text}  "
+                f"速度 {rate}  [{overall.status}]"
             )
+            self.overall_bar.setValue(int(min(1000, max(0, pct * 10))))
+            self.overall_bar.setFormat(f"{pct:.2f}%")
         else:
-            self.overall_label.setText("总体：—（尚未解析到 incomplete total 行）")
+            self.overall_label.setText("总体：—（等待 incomplete total 日志）")
+            self.overall_bar.setValue(0)
+            self.overall_bar.setFormat("%p%")
 
         expected = summary["expected"]
         exp_txt = f"/{expected}" if expected else ""
         self.summary_label.setText(
             f"活跃 {summary['active']}  "
-            f"已完成 {summary['completed']}{exp_txt}  "
+            f"完成 {summary['completed']}{exp_txt}  "
             f"跟踪 {summary['tracked']}  "
-            f"活跃合计 {format_rate(summary['active_rate_bps'])}"
+            f"速度 {format_rate(summary['active_rate_bps'])}"
         )
 
         rows = self.tracker.recent_files(limit=50)
-        if overall:
-            # put overall-like synthetic only in label; table is files
-            pass
+        self.empty_hint.setVisible(len(rows) == 0)
         self.table.setRowCount(len(rows))
         for i, fp in enumerate(rows):
             self._set_row(i, fp)
-        self._dirty = False
 
     def _set_row(self, row: int, fp: FileProgress) -> None:
+        pct = fp.pct
+        if fp.total_bytes > 0 and fp.done_bytes > 0 and pct < 0.05:
+            pct = 100.0 * fp.done_bytes / fp.total_bytes
         items = [
             fp.name,
-            f"{fp.pct:.1f}%",
+            f"{pct:.1f}%",
             fp.size_text,
             format_rate(fp.rate_bps) if fp.rate_bps else "—",
-            fp.status,
+            fp.status if not fp.is_overall else "总体",
         ]
         for col, text in enumerate(items):
             item = QTableWidgetItem(text)
-            if col == 4:
+            if fp.is_overall:
+                item.setForeground(QColor("#1565c0"))
+            elif col == 4:
                 if fp.status == "完成":
-                    item.setForeground(Qt.GlobalColor.darkGreen)
+                    item.setForeground(QColor("#2e7d32"))
                 else:
-                    item.setForeground(Qt.GlobalColor.darkBlue)
+                    item.setForeground(QColor("#ef6c00"))
+            if col == 0 and fp.source == "disk":
+                item.setToolTip("来自磁盘扫描 (*.incomplete)")
             self.table.setItem(row, col, item)
 
     def _on_toggle(self, expanded: bool) -> None:

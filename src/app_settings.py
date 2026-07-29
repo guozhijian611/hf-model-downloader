@@ -30,6 +30,7 @@ KEY_NET_MONITOR_EXPANDED = "net_monitor_expanded"
 KEY_NET_MONITOR_IFACE = "net_monitor_iface"
 KEY_NET_MONITOR_HISTORY = "net_monitor_history_sec"
 KEY_FILE_PROGRESS_EXPANDED = "file_progress_expanded"
+KEY_MONITOR_WINDOW_OPEN = "monitor_window_open"
 
 
 def get_settings() -> QSettings:
@@ -66,6 +67,7 @@ def load_form_settings() -> dict:
         KEY_FILE_PROGRESS_EXPANDED: s.value(
             KEY_FILE_PROGRESS_EXPANDED, True, type=bool
         ),
+        KEY_MONITOR_WINDOW_OPEN: s.value(KEY_MONITOR_WINDOW_OPEN, False, type=bool),
     }
 
 
@@ -93,6 +95,7 @@ def save_form_settings(
     net_monitor_iface: str = "",
     net_monitor_history_sec: int = 180,
     file_progress_expanded: bool = True,
+    monitor_window_open: bool = False,
 ) -> None:
     s = get_settings()
     s.setValue(KEY_PLATFORM, platform)
@@ -117,4 +120,5 @@ def save_form_settings(
     s.setValue(KEY_NET_MONITOR_IFACE, net_monitor_iface or "")
     s.setValue(KEY_NET_MONITOR_HISTORY, int(net_monitor_history_sec))
     s.setValue(KEY_FILE_PROGRESS_EXPANDED, bool(file_progress_expanded))
+    s.setValue(KEY_MONITOR_WINDOW_OPEN, bool(monitor_window_open))
     s.sync()

@@ -56,7 +56,9 @@ def test_per_file_and_fetching():
     t.feed(done_line)
     fp = next(iter(t.files.values()))
     assert fp.status == "完成"
-    assert t.completed_count == 1
+    # completed_count also tracks Fetching a/b progress (5) then +file
+    assert t.completed_count >= 1
+    assert fp.name and "shard" in fp.name
 
 
 def test_log_prefix_stripped():
@@ -68,3 +70,23 @@ def test_log_prefix_stripped():
     assert t.feed(line)
     assert t.overall is not None
     assert t.overall.pct == 3.0
+
+
+def test_zero_pct_recomputed_from_bytes():
+    t = DownloadProgressTracker()
+    line = "Downloading (incomplete total...):  0%| | 229M/49.6G [00:12<03:22, 244MB/s]"
+    assert t.feed(line)
+    assert t.overall is not None
+    # tqdm shows 0% but 229M/49.6G ≈ 0.45%
+    assert t.overall.pct > 0.3
+    rows = t.recent_files()
+    assert any(r.is_overall for r in rows)
+
+
+def test_fetching_files_not_treated_as_bytes():
+    t = DownloadProgressTracker()
+    assert t.feed("Fetching 10755 files:  1%| | 100/10755")
+    assert t.expected_files == 10755
+    assert t.completed_count == 100
+    # should not invent overall byte progress from 100/10755
+    assert t.overall is None
