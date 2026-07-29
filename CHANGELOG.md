@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.22.0 (2026-07-29)
+
+### Features
+
+- Portable aria2 install on Windows without winget
+  ([`47a28e9`](https://github.com/guozhijian611/hf-model-downloader/commit/47a28e901aa72fe656c0d9325db31eab9629dab1))
+
+
 ## v0.21.0 (2026-07-29)
 
 ### Features
