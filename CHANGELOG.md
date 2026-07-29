@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.13.0 (2026-07-29)
+
+### Features
+
+- Auto-restart download when stalled with no progress
+  ([`d3438d6`](https://github.com/guozhijian611/hf-model-downloader/commit/d3438d6debf75449ac2eeef6b8335cbdec2fa10b))
+
+
 ## v0.12.1 (2026-07-29)
 
 ### Bug Fixes
