@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.17.0 (2026-07-29)
+
+### Features
+
+- Add network traffic monitor panel with speed history chart
+  ([`a435c9b`](https://github.com/guozhijian611/hf-model-downloader/commit/a435c9b0fe6ec7fb527a557d1d4726e6ce095ea0))
+
+
 ## v0.16.0 (2026-07-29)
 
 ### Features
