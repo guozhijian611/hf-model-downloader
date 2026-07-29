@@ -25,8 +25,8 @@
         <div class="content">
           <ul class="menu">
             <li><a href="index.html" target="" class="active">Home</a></li>
-            <li><a href="https://github.com/samzong" target="__blank" class="">About</a></li>
-          </ul><a href="https://github.com/samzong/hf-model-downloader" target="_blank" rel="noopener noreferrer" title="Github" name="Github" class="github"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <li><a href="https://github.com/guozhijian611" target="__blank" class="">About</a></li>
+          </ul><a href="https://github.com/guozhijian611/hf-model-downloader" target="_blank" rel="noopener noreferrer" title="Github" name="Github" class="github"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
             </svg></a>
           <dark-mode permanent=""></dark-mode>
@@ -42,9 +42,9 @@
           <div id="download-section" style="margin: 20px 0;"><a href="#" onclick="downloadLatest(); return false;" style="text-decoration: none;"><img src="https://img.shields.io/badge/⬇%20Download%20for%20Your%20System-28a745?style=for-the-badge&#x26;labelColor=28a745" alt="Download"></a></div><br>
           <p>Downloads models from Hugging Face and ModelScope. Has a GUI so you don't need to mess with command lines.</p>
           <p>
-            <a href="https://github.com/samzong/hf-model-downloader/releases"><img src="https://img.shields.io/github/v/release/samzong/hf-model-downloader" alt="Release Version"></a>
-            <a href="https://github.com/samzong/hf-model-downloader/blob/main/LICENSE"><img src="https://img.shields.io/github/license/samzong/hf-model-downloader" alt="MIT License"></a>
-            <a href="https://deepwiki.com/samzong//hf-model-downloader"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
+            <a href="https://github.com/guozhijian611/hf-model-downloader/releases"><img src="https://img.shields.io/github/v/release/guozhijian611/hf-model-downloader" alt="Release Version"></a>
+            <a href="https://github.com/guozhijian611/hf-model-downloader/blob/main/LICENSE"><img src="https://img.shields.io/github/license/guozhijian611/hf-model-downloader" alt="MIT License"></a>
+            <a href="https://deepwiki.com/guozhijian611//hf-model-downloader"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
           </p>
         </div>
         <p>
@@ -54,20 +54,22 @@
         <ul>
           <li>Downloads Hugging Face and ModelScope models through a simple GUI</li>
           <li>Handles authentication tokens</li>
+          <li>Optional HTTP/SOCKS proxy for downloads</li>
+          <li>Remembers last form inputs (platform, model ID, path, token, endpoint, proxy)</li>
           <li>Shows download progress</li>
           <li>Works on Windows, macOS, Linux</li>
           <li>Creates standalone apps you can just run</li>
         </ul>
         <h2 id="just-want-to-use-it"><a aria-hidden="true" tabindex="-1" href="#just-want-to-use-it" class="anchor"><span class="icon icon-link"></span></a>Just want to use it?</h2>
-        <p>Download from <a href="https://github.com/samzong/hf-model-downloader/releases">releases</a>. Run the app. Done.</p>
+        <p>Download from <a href="https://github.com/guozhijian611/hf-model-downloader/releases">releases</a>. Run the app. Done.</p>
         <h2 id="development"><a aria-hidden="true" tabindex="-1" href="#development" class="anchor"><span class="icon icon-link"></span></a>Development</h2>
         <p>Requires <a href="https://docs.astral.sh/uv/">uv</a>.</p>
-        <pre class="language-bash"><code class="language-bash code-highlight"><span class="code-line line-number" line="1"><span class="token function">git</span> clone https://github.com/samzong/hf-model-downloader.git
+        <pre class="language-bash"><code class="language-bash code-highlight"><span class="code-line line-number" line="1"><span class="token function">git</span> clone https://github.com/guozhijian611/hf-model-downloader.git
 </span><span class="code-line line-number" line="2"><span class="token builtin class-name">cd</span> hf-model-downloader
 </span><span class="code-line line-number" line="3">
 </span><span class="code-line line-number" line="4">uv <span class="token function">sync</span>          <span class="token comment"># install deps (includes huggingface-hub[hf_xet])</span>
 </span><span class="code-line line-number" line="5">uv run main.py   <span class="token comment"># run the app</span>
-</span></code><input type="hidden" value="git clone https://github.com/samzong/hf-model-downloader.git
+</span></code><input type="hidden" value="git clone https://github.com/guozhijian611/hf-model-downloader.git
 cd hf-model-downloader
 
 uv sync          # install deps (includes huggingface-hub[hf_xet])
@@ -126,7 +128,7 @@ make release
       </markdown-style>
     </div>
     <script src="js/demo-preview.js?v=1.34.4"></script>
-    <div class="footer warpper" style="max-width:720px;">Copyright © 2026 <a href="https://github.com/samzong" target="_blank">samzong</a><br>
+    <div class="footer warpper" style="max-width:720px;">Copyright © 2026 <a href="https://github.com/guozhijian611" target="_blank">guozhijian611</a><br>
       <script>
 function downloadLatest() {
   const platform = navigator.platform.toLowerCase();
@@ -137,16 +139,16 @@ function downloadLatest() {
   if (platform.includes('mac')) {
     // macOS
     if (userAgent.includes('arm') || userAgent.includes('apple')) {
-      downloadUrl = 'https://github.com/samzong/hf-model-downloader/releases/latest/download/hf-model-downloader-arm64.dmg';
+      downloadUrl = 'https://github.com/guozhijian611/hf-model-downloader/releases/latest/download/hf-model-downloader-arm64.dmg';
     } else {
-      downloadUrl = 'https://github.com/samzong/hf-model-downloader/releases/latest/download/hf-model-downloader-x86_64.dmg';
+      downloadUrl = 'https://github.com/guozhijian611/hf-model-downloader/releases/latest/download/hf-model-downloader-x86_64.dmg';
     }
   } else if (platform.includes('win')) {
     // Windows
-    downloadUrl = 'https://github.com/samzong/hf-model-downloader/releases/latest/download/hf-model-downloader-windows-x86_64.zip';
+    downloadUrl = 'https://github.com/guozhijian611/hf-model-downloader/releases/latest/download/hf-model-downloader-windows-x86_64.zip';
   } else {
     // other
-    window.open('https://github.com/samzong/hf-model-downloader/releases/latest', '_blank');
+    window.open('https://github.com/guozhijian611/hf-model-downloader/releases/latest', '_blank');
     return;
   }
   
