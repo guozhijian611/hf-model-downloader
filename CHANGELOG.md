@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.10.2 (2026-07-29)
+
+### Bug Fixes
+
+- **update**: Make Windows in-place auto-update actually apply
+  ([`a8cbbca`](https://github.com/guozhijian611/hf-model-downloader/commit/a8cbbca265d8f6fec77e3d48f74ad81aa2e1a8bc))
+
+
 ## v0.10.1 (2026-07-29)
 
 ### Bug Fixes
