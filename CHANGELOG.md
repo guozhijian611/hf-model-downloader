@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.21.0 (2026-07-29)
+
+### Features
+
+- One-click install for missing hfd/aria2 dependencies
+  ([`6ca80e6`](https://github.com/guozhijian611/hf-model-downloader/commit/6ca80e6697c3e2874a5deba0cb535fb23a9f4f76))
+
+
 ## v0.20.0 (2026-07-29)
 
 ### Features
