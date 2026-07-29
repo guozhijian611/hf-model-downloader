@@ -1,10 +1,17 @@
 """Hugging Face Hub environment setup for downloads."""
 
+from __future__ import annotations
+
 import importlib.util
+import logging
 import os
 from contextlib import contextmanager
 
 from huggingface_hub import HfApi
+
+from .proxy_env import apply_proxy_env, normalize_proxy
+
+logger = logging.getLogger(__name__)
 
 _HF_DOWNLOAD_ENV_VARS = (
     "HF_TOKEN",
@@ -56,6 +63,60 @@ def clear_hf_download_env() -> None:
 
 def xet_available() -> bool:
     return importlib.util.find_spec("hf_xet") is not None
+
+
+def configure_hf_hub_http(proxy: str | None = None) -> str | None:
+    """Wire proxy for modern huggingface_hub (httpx).
+
+    Hub 1.x ``snapshot_download`` ignores the legacy ``proxies=`` kwarg and
+    emits a UserWarning. Official path is HTTP(S)_PROXY env and/or a custom
+    ``httpx.Client`` via ``set_client_factory``.
+    """
+    proxy = normalize_proxy(proxy)
+    apply_proxy_env(proxy)
+
+    try:
+        import httpx
+        from huggingface_hub.utils._http import (
+            close_session,
+            set_async_client_factory,
+            set_client_factory,
+        )
+    except Exception as exc:
+        logger.warning("Could not configure hf hub httpx client: %s", exc)
+        return proxy
+
+    timeout = httpx.Timeout(120.0, connect=30.0)
+
+    def _sync_factory() -> httpx.Client:
+        kwargs: dict = {
+            "timeout": timeout,
+            "follow_redirects": True,
+            # Honor HTTP_PROXY/HTTPS_PROXY as well as explicit proxy=.
+            "trust_env": True,
+        }
+        if proxy:
+            kwargs["proxy"] = proxy
+        return httpx.Client(**kwargs)
+
+    def _async_factory() -> httpx.AsyncClient:
+        kwargs: dict = {
+            "timeout": timeout,
+            "follow_redirects": True,
+            "trust_env": True,
+        }
+        if proxy:
+            kwargs["proxy"] = proxy
+        return httpx.AsyncClient(**kwargs)
+
+    try:
+        set_client_factory(_sync_factory)
+        set_async_client_factory(_async_factory)
+        close_session()
+    except Exception as exc:
+        logger.warning("set_client_factory failed: %s", exc)
+
+    return proxy
 
 
 @contextmanager

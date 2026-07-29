@@ -16,8 +16,13 @@ import sys
 
 from tqdm.auto import tqdm
 
-from .hf_hub_env import apply_hf_download_env, resolve_hf_endpoint, xet_available
-from .proxy_env import apply_proxy_env, normalize_proxy, proxies_dict
+from .hf_hub_env import (
+    apply_hf_download_env,
+    configure_hf_hub_http,
+    resolve_hf_endpoint,
+    xet_available,
+)
+from .proxy_env import apply_proxy_env, normalize_proxy
 
 PLATFORM_LABELS = {
     "huggingface": "Hugging Face",
@@ -130,6 +135,18 @@ def _hf_friendly_error(exc: Exception, endpoint: str) -> str:
     tips: list[str] = [f"Hugging Face 下载失败：{msg}"]
     lower = msg.lower()
     if (
+        "429" in lower
+        or "rate limit" in lower
+        or "too many requests" in lower
+        or "ratelimit" in lower
+    ):
+        tips.append("可能原因与建议（疑似限速/限流）：")
+        tips.append("1) 降低「hub文件」并发（例如 16→6～8）后重试")
+        tips.append("2) 填写 HF Token，认证用户额度通常高于匿名")
+        tips.append("3) 换节点或稍后再试；短时间密集重连会加重 429")
+        tips.append("4) 已下载部分会断点续传，不必清空目录")
+        return "\n".join(tips)
+    if (
         "cannot find the requested files in the local cache" in lower
         or "error happened while trying to locate the file" in lower
         or "connection" in lower
@@ -142,9 +159,10 @@ def _hf_friendly_error(exc: Exception, endpoint: str) -> str:
             f"1) 当前 Endpoint「{endpoint}」连不上或镜像不完整，"
             "可改试 https://huggingface.co（需代理时请启用代理）"
         )
-        tips.append("2) 网络不稳定：开启系统/本机代理后重试（支持断点续传）")
+        tips.append("2) 网络不稳定：开启应用内代理或 TUN 后重试（支持断点续传）")
         tips.append("3) 私有/门禁仓库：请填写有效 HF Token")
         tips.append("4) 超大仓库文件很多时，可降低并发或换网络环境再试")
+        tips.append("5) 若日志曾提示 proxies 被忽略：请更新到已修复 httpx 代理的版本")
     return "\n".join(tips)
 
 
@@ -165,8 +183,8 @@ def download_huggingface(
 
     resolved_endpoint = resolve_hf_endpoint(endpoint)
     apply_hf_download_env(token=token, endpoint=resolved_endpoint)
-    apply_proxy_env(proxy)
-    proxy_map = proxies_dict(proxy)
+    # Hub 1.x ignores snapshot_download(proxies=...); use env + httpx factory.
+    active_proxy = configure_hf_hub_http(proxy)
 
     repo_dir = os.path.join(save_path, model_id.split("/")[-1])
     using_mirror = "mirror" in resolved_endpoint.lower()
@@ -186,8 +204,13 @@ def download_huggingface(
                 "警告：未检测到 hf_xet，"
                 "大文件可能回退为普通 HTTP 下载（速度可能较慢）。"
             )
-        if proxy_map:
-            pipe.send(f"Hugging Face 下载使用代理：{normalize_proxy(proxy)}")
+        if active_proxy:
+            pipe.send(
+                f"Hugging Face 下载使用代理：{active_proxy}"
+                "（HTTP_PROXY + httpx client，不再使用已废弃的 proxies= 参数）"
+            )
+        else:
+            pipe.send("提示：未配置应用内代理；若仅开 TUN，流量仍可能走系统隧道。")
         pipe.send(f"开始从 Hugging Face 下载：{model_id}")
         pipe.send(f"仓库类型：{repo_type}")
         pipe.send(f"保存目录：{repo_dir}")
@@ -209,6 +232,7 @@ def download_huggingface(
         ]
 
     try:
+        # Do NOT pass proxies= — ignored on hub>=1.x and emits UserWarning.
         result = snapshot_download(
             repo_id=model_id,
             repo_type=repo_type,
@@ -220,7 +244,6 @@ def download_huggingface(
             ignore_patterns=ignore_patterns,
             local_files_only=False,
             etag_timeout=60,
-            proxies=proxy_map,
             endpoint=resolved_endpoint,
         )
     except Exception as exc:

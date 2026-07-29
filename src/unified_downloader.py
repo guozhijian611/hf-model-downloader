@@ -28,9 +28,9 @@ from .download_core import (  # noqa: F401
     repo_type_label,
     unified_download_model,
 )
-from .hf_hub_env import clear_hf_download_env, hf_api_client
+from .hf_hub_env import clear_hf_download_env, configure_hf_hub_http, hf_api_client
 from .hf_repo_validate import DEFAULT_VALIDATE_TIMEOUT_SEC, validate_hf_repo_type
-from .proxy_env import apply_proxy_env, normalize_proxy
+from .proxy_env import normalize_proxy
 from .utils import cleanup_environment, cleanup_lock_files
 
 
@@ -306,7 +306,7 @@ class UnifiedDownloadWorker(QThread):
                 else:
                     self._safe_emit("download_log", "代理：未启用")
 
-                apply_proxy_env(self.proxy)
+                configure_hf_hub_http(self.proxy)
                 with hf_api_client(token=self.token, endpoint=self.endpoint) as api:
                     mismatch, warning = validate_hf_repo_type(
                         api,
