@@ -177,6 +177,22 @@ class SessionStats:
         return self.total_disk_write / elapsed
 
 
+# Cap chart points so 24h windows stay light (UI + memory).
+_MAX_HISTORY_POINTS = 900
+
+
+def _history_maxlen(history_seconds: int, interval_sec: float) -> int:
+    raw = int(history_seconds / max(0.2, interval_sec)) + 5
+    return max(30, min(_MAX_HISTORY_POINTS, raw))
+
+
+def chart_sample_interval(history_seconds: int) -> float:
+    """How often to store a chart sample for the given window length."""
+    # Aim for ~600–900 points across the window.
+    seconds = max(30, int(history_seconds))
+    return max(1.0, seconds / float(_MAX_HISTORY_POINTS - 20))
+
+
 class NetworkTrafficMonitor:
     """Sample NIC counters and keep a rolling history for charting."""
 
@@ -188,9 +204,12 @@ class NetworkTrafficMonitor:
         interface: str | None = None,
     ) -> None:
         self.history_seconds = max(30, int(history_seconds))
+        # Live rate tick interval (UI timer); chart may store less often.
         self.interval_sec = max(0.2, float(interval_sec))
         self.interface: str | None = interface or None
-        maxlen = max(30, int(self.history_seconds / self.interval_sec) + 5)
+        self._chart_interval = chart_sample_interval(self.history_seconds)
+        self._last_chart_t: float | None = None
+        maxlen = _history_maxlen(self.history_seconds, self._chart_interval)
         self.history: deque[NetSnapshot] = deque(maxlen=maxlen)
         self.session = SessionStats()
         self._prev_recv: int | None = None
@@ -218,18 +237,27 @@ class NetworkTrafficMonitor:
         self._refresh_disk_space()
 
     def set_history_seconds(self, seconds: int) -> None:
-        seconds = max(30, int(seconds))
+        seconds = max(30, min(int(seconds), 7 * 24 * 3600))  # up to 7 days
         if seconds == self.history_seconds:
             return
         self.history_seconds = seconds
-        maxlen = max(30, int(self.history_seconds / self.interval_sec) + 5)
-        old = list(self.history)
-        self.history = deque(old[-maxlen:], maxlen=maxlen)
+        self._chart_interval = chart_sample_interval(self.history_seconds)
+        maxlen = _history_maxlen(self.history_seconds, self._chart_interval)
+        # Drop points older than the new window
+        cutoff = time.time() - self.history_seconds
+        kept = [s for s in self.history if s.timestamp >= cutoff]
+        # Downsample if still too dense
+        if len(kept) > maxlen:
+            step = max(1, len(kept) // maxlen)
+            kept = kept[::step][-maxlen:]
+        self.history = deque(kept, maxlen=maxlen)
+        self._last_chart_t = kept[-1].timestamp if kept else None
 
     def reset_session(self) -> None:
         """Clear totals / peaks / chart history and re-baseline counters."""
         self.session = SessionStats()
         self.history.clear()
+        self._last_chart_t = None
         self._reset_baseline()
         self.last = None
         self._refresh_disk_space()
@@ -378,8 +406,18 @@ class NetworkTrafficMonitor:
             disk_write_bytes=disk_w,
             disk_read_bytes=disk_r,
         )
-        self.history.append(snap)
         self.last = snap
+        # Store chart samples less often for long windows (hours/days).
+        if (
+            self._last_chart_t is None
+            or (now - self._last_chart_t) >= self._chart_interval - 1e-6
+        ):
+            self.history.append(snap)
+            self._last_chart_t = now
+            # Prune points outside the visible window
+            cutoff = now - self.history_seconds
+            while self.history and self.history[0].timestamp < cutoff:
+                self.history.popleft()
         return snap
 
     def history_series(
@@ -388,9 +426,13 @@ class NetworkTrafficMonitor:
         """Return (t_rel, down_bps, up_bps, disk_write_bps) for charting."""
         if not self.history:
             return [], [], [], []
-        t0 = self.history[0].timestamp
-        ts = [s.timestamp - t0 for s in self.history]
-        down = [s.down_bps for s in self.history]
-        up = [s.up_bps for s in self.history]
-        disk_w = [s.disk_write_bps for s in self.history]
+        cutoff = time.time() - self.history_seconds
+        samples = [s for s in self.history if s.timestamp >= cutoff]
+        if not samples:
+            return [], [], [], []
+        t0 = samples[0].timestamp
+        ts = [s.timestamp - t0 for s in samples]
+        down = [s.down_bps for s in samples]
+        up = [s.up_bps for s in samples]
+        disk_w = [s.disk_write_bps for s in samples]
         return ts, down, up, disk_w

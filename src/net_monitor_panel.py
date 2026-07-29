@@ -38,8 +38,7 @@ class SpeedChartWidget(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setFixedHeight(130)
         self.setToolTip(
-            "绿=下载  橙=上传  蓝=磁盘写\n"
-            "下载长期明显高于磁盘写 → 可能先堆内存再掉速"
+            "绿=下载  橙=上传  蓝=磁盘写\n下载长期明显高于磁盘写 → 可能先堆内存再掉速"
         )
 
     def set_series(
@@ -193,11 +192,24 @@ class NetMonitorPanel(QFrame):
         header.addWidget(self.iface_combo)
 
         self.window_combo = QComboBox()
-        self.window_combo.addItem("1分", 60)
-        self.window_combo.addItem("3分", 180)
-        self.window_combo.addItem("5分", 300)
-        self.window_combo.addItem("10分", 600)
-        self.window_combo.setCurrentIndex(1)
+        self.window_combo.setToolTip(
+            "曲线统计窗口：越长采样越稀（控制点数），实时数字仍每秒刷新。\n"
+            "「平均下载」按整个会话总流量÷时长，不只看当前窗口。"
+        )
+        # (label, seconds)
+        for label, sec in (
+            ("1分", 60),
+            ("3分", 180),
+            ("5分", 300),
+            ("10分", 600),
+            ("30分", 1800),
+            ("1小时", 3600),
+            ("6小时", 6 * 3600),
+            ("1天", 24 * 3600),
+            ("3天", 3 * 24 * 3600),
+        ):
+            self.window_combo.addItem(label, sec)
+        self.window_combo.setCurrentIndex(1)  # 3分
         self.window_combo.currentIndexChanged.connect(self._on_window_changed)
         header.addWidget(self.window_combo)
 

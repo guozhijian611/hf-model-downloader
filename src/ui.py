@@ -589,7 +589,8 @@ class MainWindow(QMainWindow):
 
         hist = int(data.get("net_monitor_history_sec") or 180)
         mw = self._monitor_window
-        mw.net_panel.set_history_seconds(max(60, min(600, hist)))
+        # Allow up to 3 days (matches monitor window options)
+        mw.net_panel.set_history_seconds(max(60, min(3 * 24 * 3600, hist)))
         mw.net_panel.set_selected_interface(str(data.get("net_monitor_iface") or ""))
         mw.net_panel.set_expanded(True)
         mw.file_panel.set_expanded(True)

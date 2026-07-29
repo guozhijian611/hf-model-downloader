@@ -59,3 +59,15 @@ def test_monitor_tick_and_history():
     m.reset_session()
     assert m.session.total_down == 0
     assert len(m.history) == 0
+
+
+def test_long_window_caps_points():
+    from src.net_monitor import _MAX_HISTORY_POINTS, chart_sample_interval
+
+    # 1 day should not use 1 sample/sec
+    assert chart_sample_interval(24 * 3600) >= 20
+    m = NetworkTrafficMonitor(history_seconds=24 * 3600, interval_sec=1.0)
+    assert m.history.maxlen <= _MAX_HISTORY_POINTS
+    m.set_history_seconds(3600)
+    assert m.history_seconds == 3600
+    assert m._chart_interval >= 1.0
