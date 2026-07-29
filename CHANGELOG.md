@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.19.1 (2026-07-29)
+
+### Bug Fixes
+
+- Speed up download start and clean up monitor UI
+  ([`73a5f15`](https://github.com/guozhijian611/hf-model-downloader/commit/73a5f15587532b21b4c48a29134e2812cefda557))
+
+
 ## v0.19.0 (2026-07-29)
 
 ### Features
