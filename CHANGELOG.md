@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.9.1 (2026-07-29)
+
+### Bug Fixes
+
+- **download**: Prevent crash when starting downloads under Qt
+  ([`d01d88a`](https://github.com/guozhijian611/hf-model-downloader/commit/d01d88ad4b077cd8f4fa6f0d723f57cce7004649))
+
+
 ## v0.9.0 (2026-07-29)
 
 ### Bug Fixes
