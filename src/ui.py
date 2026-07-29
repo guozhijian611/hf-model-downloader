@@ -1,3 +1,4 @@
+import logging
 import os
 import platform
 from pathlib import Path
@@ -22,6 +23,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from .app_logging import get_last_crash_log_path, get_log_dir, get_runtime_log_path
 from .app_settings import load_form_settings, save_form_settings
 from .hf_hub_env import resolve_hf_endpoint
 from .proxy_env import normalize_proxy
@@ -40,12 +42,15 @@ GITHUB_REPO_URL = "https://github.com/guozhijian611/hf-model-downloader"
 AUTHOR_NAME = "guozhijian611"
 AUTHOR_GITHUB_URL = "https://github.com/guozhijian611"
 
+logger = logging.getLogger(__name__)
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.app_version = get_app_version()
         self.setWindowTitle(f"HF Model Downloader v{self.app_version}")
+        logger.info("MainWindow init, version=%s", self.app_version)
 
         # Set window icon based on platform
         system = platform.system().lower()
@@ -170,11 +175,17 @@ class MainWindow(QMainWindow):
         self.check_update_btn.setFixedHeight(standard_button_height)
         self.check_update_btn.setToolTip("从 GitHub Releases 检查是否有新版本")
         self.check_update_btn.clicked.connect(self.check_for_updates)
+        self.open_logs_btn = QPushButton("📋 打开日志")
+        self.open_logs_btn.setMaximumWidth(150)
+        self.open_logs_btn.setFixedHeight(standard_button_height)
+        self.open_logs_btn.setToolTip("打开运行日志 / 崩溃日志目录")
+        self.open_logs_btn.clicked.connect(self.open_log_folder)
 
         links_layout.addWidget(self.browse_models_btn)
         links_layout.addWidget(self.browse_datasets_btn)
         links_layout.addWidget(self.get_token_btn)
         links_layout.addWidget(self.check_update_btn)
+        links_layout.addWidget(self.open_logs_btn)
         links_layout.addStretch()
 
         guide_content_layout.addLayout(links_layout)
@@ -472,6 +483,21 @@ class MainWindow(QMainWindow):
             return normalize_proxy(self.proxy_input.text())
         return None
 
+    def open_log_folder(self):
+        """Open the directory that stores runtime.log and crash reports."""
+        try:
+            log_dir = get_log_dir()
+            runtime = get_runtime_log_path()
+            crash = get_last_crash_log_path()
+            self.update_status(f"日志目录：{log_dir}")
+            self.update_status(f"运行日志：{runtime}")
+            if crash.exists():
+                self.update_status(f"最近崩溃：{crash}")
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(log_dir)))
+        except Exception as exc:
+            self.update_status(f"打开日志目录失败：{exc}", error=True)
+            QMessageBox.warning(self, "打开日志", f"打开日志目录失败：\n{exc}")
+
     def check_for_updates(self):
         """Check GitHub Releases for a newer app version (async)."""
         if self._update_worker and self._update_worker.isRunning():
@@ -719,6 +745,15 @@ class MainWindow(QMainWindow):
             "repo_type": repo_type,
             "proxy": proxy,
         }
+        logger.info(
+            "Start download platform=%s repo=%s type=%s path=%s endpoint=%s proxy=%s",
+            self._download_params["platform"],
+            repo_id,
+            repo_type,
+            save_path,
+            endpoint,
+            bool(proxy),
+        )
         self._start_download_job(clear_log=True, skip_validation=False)
 
     def _start_download_job(self, *, clear_log: bool, skip_validation: bool):
@@ -756,6 +791,7 @@ class MainWindow(QMainWindow):
                 skip_validation=skip_validation,
             )
         except Exception as exc:
+            logger.exception("Failed to create download worker: %s", exc)
             self._set_downloading_ui(False)
             self.update_status(f"无法启动下载：{exc}", error=True)
             QMessageBox.critical(self, "下载失败", f"无法启动下载：\n{exc}")
@@ -782,7 +818,9 @@ class MainWindow(QMainWindow):
         )
         try:
             self.download_worker.start()
+            logger.info("Download worker thread started")
         except Exception as exc:
+            logger.exception("Failed to start download worker: %s", exc)
             self._set_downloading_ui(False)
             self.update_status(f"启动下载线程失败：{exc}", error=True)
             QMessageBox.critical(self, "下载失败", f"启动下载线程失败：\n{exc}")
