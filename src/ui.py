@@ -31,6 +31,12 @@ from .endpoints import (
     preset_labels,
     url_from_combo_text,
 )
+from .hfd_backend import (
+    BACKEND_CHOICES,
+    BACKEND_HFD,
+    BACKEND_HUB,
+    hfd_availability,
+)
 from .proxy_env import normalize_proxy
 from .resource_utils import get_asset_path
 from .unified_downloader import UnifiedDownloadWorker
@@ -154,8 +160,8 @@ class MainWindow(QMainWindow):
             "2. 填写模型或数据集 ID\n"
             "3. 选择保存目录\n"
             "4. 可选：Token / 代理 / Endpoint\n"
-            "5. 可勾选 Endpoint 失败自动切换\n"
-            "6. 建议勾选「失败自动重试」（断点续传）\n"
+            "5. 下载方式可选 huggingface-hub 或 hfd/aria2\n"
+            "6. 可勾选 Endpoint 失败自动切换 + 失败自动重试\n"
             "7. 点击下载（会记住上次输入）\n"
         )
         help_text.setWordWrap(True)
@@ -220,6 +226,26 @@ class MainWindow(QMainWindow):
         type_layout.addWidget(self.type_combo)
         type_layout.addStretch()
         layout.addLayout(type_layout)
+
+        backend_layout = QHBoxLayout()
+        backend_label = QLabel("下载方式:")
+        self.backend_combo = QComboBox()
+        for key, label in BACKEND_CHOICES:
+            self.backend_combo.addItem(label, key)
+        self.backend_combo.setCurrentIndex(0)
+        self.backend_combo.setToolTip(
+            "huggingface-hub：内置 Python SDK\n"
+            "hfd：内置 padeoe/hfd.sh + aria2c 多线程（仅 Hugging Face）\n"
+            "脚本来源：https://gist.github.com/padeoe/697678ab8e528b85a2a7bddafea1fa4f"
+        )
+        self.backend_combo.currentIndexChanged.connect(self._on_backend_changed)
+        self.backend_status = QLabel("")
+        self.backend_status.setStyleSheet("color: #666; font-size: 11px;")
+        backend_layout.addWidget(backend_label)
+        backend_layout.addWidget(self.backend_combo)
+        backend_layout.addWidget(self.backend_status, stretch=1)
+        layout.addLayout(backend_layout)
+        self._refresh_backend_status()
 
         repo_layout = QHBoxLayout()
         self.repo_label = QLabel("模型 ID:")
@@ -426,6 +452,13 @@ class MainWindow(QMainWindow):
         self.proxy_input.setEnabled(self.proxy_enabled.isChecked())
         self.auto_retry_checkbox.setChecked(bool(data.get("auto_retry", True)))
 
+        backend = data.get("download_backend") or BACKEND_HUB
+        idx = self.backend_combo.findData(backend)
+        if idx < 0:
+            idx = 0
+        self.backend_combo.setCurrentIndex(idx)
+        self._refresh_backend_status()
+
     def _platform_key(self) -> str:
         return (
             "modelscope"
@@ -462,6 +495,24 @@ class MainWindow(QMainWindow):
     def _current_endpoint_url(self) -> str:
         return url_from_combo_text(self.endpoint_combo.currentText())
 
+    def _current_backend(self) -> str:
+        data = self.backend_combo.currentData()
+        return data if isinstance(data, str) else BACKEND_HUB
+
+    def _refresh_backend_status(self):
+        backend = self._current_backend()
+        if backend == BACKEND_HFD:
+            ok, msg = hfd_availability()
+            color = "#2e7d32" if ok else "#c62828"
+            self.backend_status.setStyleSheet(f"color: {color}; font-size: 11px;")
+            self.backend_status.setText(msg)
+        else:
+            self.backend_status.setStyleSheet("color: #666; font-size: 11px;")
+            self.backend_status.setText("使用 Python huggingface-hub")
+
+    def _on_backend_changed(self, _index: int = 0):
+        self._refresh_backend_status()
+
     def _save_settings(self):
         """Persist current form values for next launch."""
         save_form_settings(
@@ -475,6 +526,7 @@ class MainWindow(QMainWindow):
             proxy=self.proxy_input.text().strip(),
             proxy_enabled=self.proxy_enabled.isChecked(),
             auto_retry=self.auto_retry_checkbox.isChecked(),
+            download_backend=self._current_backend(),
         )
 
     def closeEvent(self, event):
@@ -508,6 +560,8 @@ class MainWindow(QMainWindow):
 
     def on_platform_changed(self, platform_text):
         self._refill_endpoint_combo(platform_text)
+        # hfd is HF-only; keep selection but warn via status label.
+        self._refresh_backend_status()
 
     def open_models_page(self):
         """Open the models page for the current platform"""
@@ -790,6 +844,26 @@ class MainWindow(QMainWindow):
                 return
 
         platform_key = "modelscope" if platform == "ModelScope" else "huggingface"
+        backend = self._current_backend()
+        if backend == BACKEND_HFD and platform_key != "huggingface":
+            self.update_status(
+                "错误：hfd 仅支持 Hugging Face，请切换平台或下载方式",
+                error=True,
+            )
+            return
+        if backend == BACKEND_HFD:
+            ok, reason = hfd_availability()
+            if not ok:
+                self.update_status(f"错误：hfd 不可用 — {reason}", error=True)
+                QMessageBox.warning(
+                    self,
+                    "hfd 不可用",
+                    f"{reason}\n\n"
+                    "请安装 aria2c（推荐）或 wget，Windows 还需 Git Bash。\n"
+                    "也可改回「huggingface-hub（内置）」。",
+                )
+                return
+
         endpoint = self._current_endpoint_url() or default_endpoint(platform_key)
         endpoints = build_endpoint_chain(
             endpoint,
@@ -819,10 +893,13 @@ class MainWindow(QMainWindow):
             "endpoints": endpoints,
             "repo_type": repo_type,
             "proxy": proxy,
+            "backend": backend,
         }
         logger.info(
-            "Start download platform=%s repo=%s type=%s path=%s endpoints=%s proxy=%s",
+            "Start download platform=%s backend=%s repo=%s type=%s "
+            "path=%s endpoints=%s proxy=%s",
             platform_key,
+            backend,
             repo_id,
             repo_type,
             save_path,
@@ -846,6 +923,14 @@ class MainWindow(QMainWindow):
             if params["proxy"]:
                 self.update_status(f"使用代理：{params['proxy']}")
             eps = params.get("endpoints") or [params["endpoint"]]
+            backend = params.get("backend") or BACKEND_HUB
+            if backend == BACKEND_HFD:
+                self.update_status(
+                    "下载方式：hfd / aria2"
+                    "（https://gist.github.com/padeoe/697678ab8e528b85a2a7bddafea1fa4f）"
+                )
+            else:
+                self.update_status("下载方式：huggingface-hub（内置）")
             if len(eps) > 1:
                 self.update_status("Endpoint 顺序：" + " → ".join(eps))
             else:
@@ -870,6 +955,7 @@ class MainWindow(QMainWindow):
                 proxy=params["proxy"],
                 skip_validation=skip_validation,
                 endpoints=params.get("endpoints"),
+                backend=params.get("backend") or BACKEND_HUB,
             )
         except Exception as exc:
             logger.exception("Failed to create download worker: %s", exc)

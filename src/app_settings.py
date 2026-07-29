@@ -18,6 +18,7 @@ KEY_ENDPOINT_FAILOVER = "endpoint_failover"
 KEY_PROXY = "proxy"
 KEY_PROXY_ENABLED = "proxy_enabled"
 KEY_AUTO_RETRY = "auto_retry"
+KEY_DOWNLOAD_BACKEND = "download_backend"
 
 
 def get_settings() -> QSettings:
@@ -38,6 +39,9 @@ def load_form_settings() -> dict:
         KEY_PROXY: s.value(KEY_PROXY, "", type=str),
         KEY_PROXY_ENABLED: s.value(KEY_PROXY_ENABLED, False, type=bool),
         KEY_AUTO_RETRY: s.value(KEY_AUTO_RETRY, True, type=bool),
+        KEY_DOWNLOAD_BACKEND: s.value(
+            KEY_DOWNLOAD_BACKEND, "huggingface-hub", type=str
+        ),
     }
 
 
@@ -53,6 +57,7 @@ def save_form_settings(
     proxy_enabled: bool,
     auto_retry: bool = True,
     endpoint_failover: bool = True,
+    download_backend: str = "huggingface-hub",
 ) -> None:
     s = get_settings()
     s.setValue(KEY_PLATFORM, platform)
@@ -65,4 +70,5 @@ def save_form_settings(
     s.setValue(KEY_PROXY, proxy)
     s.setValue(KEY_PROXY_ENABLED, proxy_enabled)
     s.setValue(KEY_AUTO_RETRY, auto_retry)
+    s.setValue(KEY_DOWNLOAD_BACKEND, download_backend)
     s.sync()

@@ -150,6 +150,7 @@ class UnifiedDownloadWorker(QThread):
         proxy=None,
         skip_validation=False,
         endpoints=None,
+        backend="huggingface-hub",
     ):
         super().__init__()
 
@@ -165,6 +166,7 @@ class UnifiedDownloadWorker(QThread):
         self.repo_type = repo_type
         self.proxy = normalize_proxy(proxy)
         self.skip_validation = bool(skip_validation)
+        self.backend = (backend or "huggingface-hub").strip()
 
         self._config = PLATFORM_CONFIGS[platform]
         # Prefer multi-endpoint chain; fall back to single endpoint.
@@ -378,6 +380,7 @@ class UnifiedDownloadWorker(QThread):
                         self._pipe_writer,
                         self.repo_type,
                         self.proxy,
+                        self.backend,
                     ),
                 )
                 self._download_process.start()

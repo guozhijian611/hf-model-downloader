@@ -42,6 +42,7 @@
 - 支持模型与数据集两类仓库
 - 可选 Token，用于私有仓库或提高限流额度
 - 多 Endpoint 预设（HF 镜像/官方、ModelScope），支持失败自动切换
+- 可选下载后端：内置 `huggingface-hub`，或内置 [hfd](https://gist.github.com/padeoe/697678ab8e528b85a2a7bddafea1fa4f)+aria2 高速下载
 - **代理设置**：支持 HTTP/HTTPS/SOCKS 代理（如 `http://127.0.0.1:7890`）
 - **在线检查 / 自动更新**：从 GitHub Releases 检测新版本，可自动下载安装包并解压替换当前程序
 - **运行 / 崩溃日志**：自动写入本地日志目录（界面可「打开日志」），便于排查闪退

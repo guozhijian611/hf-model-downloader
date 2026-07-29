@@ -149,6 +149,8 @@ def build_app():
         f"pyproject.toml{sep}.",
         "--add-data",
         f"assets{sep}assets",
+        "--add-data",
+        f"scripts{sep}scripts",
         "--hidden-import",
         "huggingface_hub",
         "--hidden-import",

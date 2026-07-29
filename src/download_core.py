@@ -315,6 +315,7 @@ def unified_download_model(
     pipe=None,
     repo_type: str = "model",
     proxy: str = None,
+    backend: str = "huggingface-hub",
 ):
     """Download entry used by subprocess workers (no Qt)."""
     old_stdout = sys.stdout
@@ -329,6 +330,7 @@ def unified_download_model(
         print("Parent Process ID:", os.getppid())
         print("Current Working Directory:", os.getcwd())
         print("Python Executable:", sys.executable)
+        print("Download Backend:", backend or "huggingface-hub")
         try:
             print("Process Start Method:", multiprocessing.get_start_method())
         except RuntimeError:
@@ -353,10 +355,34 @@ def unified_download_model(
 
         try:
             if platform == "huggingface":
-                download_huggingface(
-                    model_id, save_path, token, endpoint, pipe, repo_type, proxy
-                )
+                from .hfd_backend import BACKEND_HFD, download_with_hfd
+
+                if (backend or "").strip() == BACKEND_HFD:
+                    download_with_hfd(
+                        model_id,
+                        save_path,
+                        token,
+                        endpoint,
+                        pipe,
+                        repo_type,
+                        proxy,
+                    )
+                else:
+                    download_huggingface(
+                        model_id,
+                        save_path,
+                        token,
+                        endpoint,
+                        pipe,
+                        repo_type,
+                        proxy,
+                    )
             elif platform == "modelscope":
+                if (backend or "").strip() == "hfd":
+                    _abort_download(
+                        pipe,
+                        "hfd 仅支持 Hugging Face，请切换平台或改用 huggingface-hub。",
+                    )
                 download_modelscope(
                     model_id, save_path, token, endpoint, pipe, repo_type, proxy
                 )
@@ -389,6 +415,7 @@ def isolated_download_main(
     pipe,
     repo_type,
     proxy=None,
+    backend="huggingface-hub",
 ):
     """
     Top-level process entry point (must stay free of PyQt imports).
@@ -406,6 +433,7 @@ def isolated_download_main(
             safe_pipe,
             repo_type,
             proxy,
+            backend=backend,
         )
         safe_pipe.close()
     except SystemExit:
