@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.12.0 (2026-07-29)
+
+### Features
+
+- Optional built-in hfd/aria2 download backend
+  ([`795f1fb`](https://github.com/guozhijian611/hf-model-downloader/commit/795f1fb4291879894795282ba7ea8343b44cb997))
+
+
 ## v0.11.0 (2026-07-29)
 
 ### Features
