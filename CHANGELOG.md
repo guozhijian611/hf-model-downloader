@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.18.0 (2026-07-29)
+
+### Features
+
+- File progress panel and disk write speed monitoring
+  ([`a3033f9`](https://github.com/guozhijian611/hf-model-downloader/commit/a3033f9ebcb9111d30f53b82b9362c798c23dda3))
+
+
 ## v0.17.0 (2026-07-29)
 
 ### Features
