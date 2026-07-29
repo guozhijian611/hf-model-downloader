@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.24.0 (2026-07-29)
+
+### Features
+
+- Feed hfd/aria2 progress into the monitor panel
+  ([`e7f47cf`](https://github.com/guozhijian611/hf-model-downloader/commit/e7f47cf8418875ce0c039117953ed6ae85409c44))
+
+
 ## v0.23.0 (2026-07-29)
 
 ### Features
