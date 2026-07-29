@@ -6,51 +6,80 @@ import re
 import sys
 from pathlib import Path
 
-# Keep in sync with pyproject.toml [project].version when packaging as a frozen app.
-FALLBACK_VERSION = "0.8.0"
+# Last-resort fallback when no other version source is available.
+FALLBACK_VERSION = "0.8.2"
 
 
-def _read_pyproject_version() -> str | None:
-    """Read version from pyproject.toml near this source tree or frozen bundle."""
-    candidates: list[Path] = []
+def _read_version_data_module() -> str | None:
+    try:
+        from .version_data import __version__
+
+        value = (__version__ or "").strip()
+        return value or None
+    except Exception:
+        return None
+
+
+def _candidate_resource_roots() -> list[Path]:
+    roots: list[Path] = []
     here = Path(__file__).resolve()
-    candidates.append(here.parents[1] / "pyproject.toml")
+    roots.append(here.parents[1])  # project root in dev
     if getattr(sys, "frozen", False):
-        # PyInstaller onedir/onefile layout may place resources next to executable.
         meipass = getattr(sys, "_MEIPASS", None)
         if meipass:
-            candidates.append(Path(meipass) / "pyproject.toml")
-        candidates.append(Path(sys.executable).resolve().parent / "pyproject.toml")
+            roots.append(Path(meipass))
+        exe_dir = Path(sys.executable).resolve().parent
+        roots.append(exe_dir)
+        # macOS .app: Contents/MacOS -> Contents/Resources sometimes used
+        roots.append(exe_dir.parent / "Resources")
+    return roots
 
-    for path in candidates:
-        try:
-            if not path.is_file():
+
+def _read_version_file() -> str | None:
+    for root in _candidate_resource_roots():
+        for name in ("VERSION", "pyproject.toml"):
+            path = root / name
+            try:
+                if not path.is_file():
+                    continue
+                text = path.read_text(encoding="utf-8")
+                if name == "VERSION":
+                    value = text.strip().splitlines()[0].strip() if text.strip() else ""
+                    if value:
+                        return value.lstrip("vV")
+                else:
+                    match = re.search(
+                        r'(?m)^version\s*=\s*["\']([^"\']+)["\']',
+                        text,
+                    )
+                    if match:
+                        return match.group(1).strip()
+            except OSError:
                 continue
-            text = path.read_text(encoding="utf-8")
-            match = re.search(
-                r'(?m)^version\s*=\s*["\']([^"\']+)["\']',
-                text,
-            )
-            if match:
-                return match.group(1).strip()
-        except OSError:
-            continue
     return None
 
 
 def get_app_version() -> str:
     """Return the running app version string (without leading 'v')."""
+    for reader in (
+        _read_version_data_module,
+        _read_version_file,
+    ):
+        value = reader()
+        if value:
+            return normalize_version(value)
+
     try:
         from importlib.metadata import PackageNotFoundError, version
 
         try:
-            return version("hf-model-downloader")
+            return normalize_version(version("hf-model-downloader"))
         except PackageNotFoundError:
             pass
     except Exception:
         pass
 
-    return _read_pyproject_version() or FALLBACK_VERSION
+    return FALLBACK_VERSION
 
 
 def normalize_version(version: str | None) -> str:

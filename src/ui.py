@@ -1,9 +1,11 @@
 import os
 import platform
+from pathlib import Path
 
 from PyQt6.QtCore import QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices, QIcon
 from PyQt6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -25,7 +27,13 @@ from .hf_hub_env import resolve_hf_endpoint
 from .proxy_env import normalize_proxy
 from .resource_utils import get_asset_path
 from .unified_downloader import UnifiedDownloadWorker
-from .update_check import UpdateCheckResult, UpdateCheckWorker
+from .update_check import (
+    UpdateApplyWorker,
+    UpdateCheckResult,
+    UpdateCheckWorker,
+    is_frozen_install,
+    launch_updater_and_exit,
+)
 from .version import get_app_version
 
 GITHUB_REPO_URL = "https://github.com/guozhijian611/hf-model-downloader"
@@ -315,6 +323,8 @@ class MainWindow(QMainWindow):
 
         self.download_worker = None
         self._update_worker = None
+        self._update_apply_worker = None
+        self._pending_update_result = None
         self._user_stopped = False
         self._retry_attempt = 0
         self._download_params = None
@@ -467,6 +477,9 @@ class MainWindow(QMainWindow):
         if self._update_worker and self._update_worker.isRunning():
             self.update_status("正在检查更新，请稍候...")
             return
+        if self._update_apply_worker and self._update_apply_worker.isRunning():
+            self.update_status("正在下载并安装更新，请稍候...")
+            return
 
         proxy = self._current_proxy_for_network()
         self.check_update_btn.setEnabled(False)
@@ -482,36 +495,139 @@ class MainWindow(QMainWindow):
         self._update_worker.start()
 
     def _on_update_worker_done(self):
-        self.check_update_btn.setEnabled(True)
+        # Keep button disabled if apply worker is running.
+        if not (self._update_apply_worker and self._update_apply_worker.isRunning()):
+            self.check_update_btn.setEnabled(True)
         if self._update_worker:
             self._update_worker.deleteLater()
             self._update_worker = None
 
     def _on_update_check_finished(self, result: UpdateCheckResult):
         self.update_status(result.message)
+        self._pending_update_result = result
 
         if result.error:
             QMessageBox.warning(self, "检查更新", result.message)
             return
 
-        if result.update_available:
+        if not result.update_available:
+            QMessageBox.information(self, "检查更新", result.message)
+            return
+
+        can_auto = bool(result.asset) and is_frozen_install()
+        if can_auto:
             reply = QMessageBox.question(
                 self,
                 "发现新版本",
                 (
                     f"{result.message}\n\n"
                     f"最新版本：v{result.latest_version}\n"
-                    f"当前版本：v{result.current_version}\n\n"
-                    "是否打开下载页面？"
+                    f"当前版本：v{result.current_version}\n"
+                    f"安装包：{result.asset.name}\n\n"
+                    "是否立即下载、解压并替换当前程序？\n"
+                    "（完成后会自动重启）"
                 ),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
             )
             if reply == QMessageBox.StandardButton.Yes:
-                QDesktopServices.openUrl(QUrl(result.release_url))
+                self._start_auto_update(result)
             return
 
-        QMessageBox.information(self, "检查更新", result.message)
+        # Dev mode or no matching asset: open releases page.
+        detail = result.message
+        if not is_frozen_install():
+            detail += (
+                "\n\n当前为开发模式，无法自动替换安装包。可打开 Releases 页面手动下载。"
+            )
+        elif not result.asset:
+            detail += "\n\n未找到适合本机系统的安装包。"
+        reply = QMessageBox.question(
+            self,
+            "发现新版本",
+            f"{detail}\n\n是否打开下载页面？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            QDesktopServices.openUrl(QUrl(result.release_url))
+
+    def _start_auto_update(self, result: UpdateCheckResult):
+        if not result.asset:
+            QMessageBox.warning(self, "自动更新", "没有可下载的安装包。")
+            return
+        if self.download_worker and self.download_worker.isRunning():
+            QMessageBox.warning(
+                self,
+                "自动更新",
+                "当前正在下载模型，请先停止后再更新程序。",
+            )
+            return
+
+        proxy = self._current_proxy_for_network()
+        self.check_update_btn.setEnabled(False)
+        self.update_status(
+            f"开始自动更新到 v{result.latest_version}（{result.asset.name}）..."
+        )
+        self._update_apply_worker = UpdateApplyWorker(
+            result.asset, proxy=proxy, parent=self
+        )
+        self._update_apply_worker.progress.connect(self.update_status)
+        self._update_apply_worker.finished_ok.connect(self._on_update_apply_ok)
+        self._update_apply_worker.failed.connect(self._on_update_apply_failed)
+        self._update_apply_worker.finished.connect(self._on_update_apply_worker_done)
+        self._update_apply_worker.start()
+
+    def _on_update_apply_worker_done(self):
+        self.check_update_btn.setEnabled(True)
+        if self._update_apply_worker:
+            self._update_apply_worker.deleteLater()
+            self._update_apply_worker = None
+
+    def _on_update_apply_ok(self, script_path: str):
+        self.update_status("更新包已就绪，即将退出并替换程序...")
+        reply = QMessageBox.information(
+            self,
+            "准备安装更新",
+            (
+                "更新文件已下载并解压完成。\n\n"
+                "点击「确定」后程序将退出，自动替换文件并重新启动。\n"
+                "请勿手动删除原安装目录。"
+            ),
+            QMessageBox.StandardButton.Ok,
+        )
+        if reply == QMessageBox.StandardButton.Ok:
+            try:
+                launch_updater_and_exit(Path(script_path))
+            except Exception as exc:
+                QMessageBox.critical(
+                    self,
+                    "自动更新失败",
+                    f"无法启动更新脚本：{exc}",
+                )
+                return
+            # Quit so files can be overwritten.
+            QApplication.instance().quit()
+
+    def _on_update_apply_failed(self, error_msg: str):
+        self.update_status(f"自动更新失败：{error_msg}", error=True)
+        result = self._pending_update_result
+        buttons = QMessageBox.StandardButton.Ok
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("自动更新失败")
+        box.setText(f"自动下载/安装失败：\n{error_msg}")
+        if result and result.release_url:
+            box.setInformativeText("可以改为打开 Releases 页面手动下载。")
+            box.setStandardButtons(
+                QMessageBox.StandardButton.Open | QMessageBox.StandardButton.Cancel
+            )
+            box.setDefaultButton(QMessageBox.StandardButton.Open)
+            if box.exec() == QMessageBox.StandardButton.Open:
+                QDesktopServices.openUrl(QUrl(result.release_url))
+        else:
+            box.setStandardButtons(buttons)
+            box.exec()
 
     def on_type_changed(self, type_text):
         if type_text == "Dataset":

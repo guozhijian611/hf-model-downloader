@@ -1,4 +1,10 @@
-from src.version import is_remote_newer, normalize_version, parse_version_tuple
+from src.version import (
+    get_app_version,
+    is_remote_newer,
+    normalize_version,
+    parse_version_tuple,
+)
+from src.version_data import __version__ as embedded_version
 
 
 def test_normalize_version():
@@ -17,3 +23,7 @@ def test_is_remote_newer():
     assert is_remote_newer("0.6.2", "v0.7.0") is True
     assert is_remote_newer("0.6.2", "0.6.2") is False
     assert is_remote_newer("0.7.0", "0.6.9") is False
+
+
+def test_embedded_version_matches_get_app_version():
+    assert get_app_version() == embedded_version

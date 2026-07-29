@@ -2,6 +2,7 @@ import contextlib
 import io
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -83,10 +84,46 @@ def _build_lock():
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
+def _read_project_version() -> str:
+    """Read version from pyproject.toml (source of truth for releases)."""
+    text = (_project_root() / "pyproject.toml").read_text(encoding="utf-8")
+    match = re.search(r'(?m)^version\s*=\s*["\']([^"\']+)["\']', text)
+    if not match:
+        raise RuntimeError("Could not read version from pyproject.toml")
+    return match.group(1).strip()
+
+
+def _sync_version_artifacts(version: str) -> None:
+    """Embed version into files that ship inside the frozen app."""
+    root = _project_root()
+    (root / "VERSION").write_text(f"{version}\n", encoding="utf-8")
+    version_data = root / "src" / "version_data.py"
+    version_data.write_text(
+        '"""Generated app version — keep in sync with pyproject.toml via build.py."""\n'
+        "\n"
+        f'__version__ = "{version}"\n',
+        encoding="utf-8",
+    )
+    # Keep fallback constant aligned for source runs / partial bundles.
+    version_py = root / "src" / "version.py"
+    text = version_py.read_text(encoding="utf-8")
+    updated = re.sub(
+        r'FALLBACK_VERSION\s*=\s*["\'][^"\']*["\']',
+        f'FALLBACK_VERSION = "{version}"',
+        text,
+        count=1,
+    )
+    if updated != text:
+        version_py.write_text(updated, encoding="utf-8")
+    print(f"Synced embedded version artifacts to {version}")
+
+
 def build_app():
     system = platform.system().lower()
     arch = get_architecture()
     app_name = "hf-model-downloader"
+    version = _read_project_version()
+    _sync_version_artifacts(version)
 
     # Ensure assets directory exists
     assets_dir = os.path.join(os.path.dirname(__file__), "assets")
@@ -98,14 +135,20 @@ def build_app():
     # Or directly use the `make build` command
 
     # Base PyInstaller command
+    # Bundle VERSION + pyproject.toml so frozen apps report the correct version.
+    sep = ";" if system == "windows" else ":"
     cmd = [
         "pyinstaller",
         "--noconfirm",
         f"--name={app_name}",
         "--add-data",
-        "README.md:.",
+        f"README.md{sep}.",
         "--add-data",
-        "assets:assets",
+        f"VERSION{sep}.",
+        "--add-data",
+        f"pyproject.toml{sep}.",
+        "--add-data",
+        f"assets{sep}assets",
         "--hidden-import",
         "huggingface_hub",
         "--hidden-import",
@@ -116,6 +159,8 @@ def build_app():
         "tqdm",
         "--hidden-import",
         "requests",
+        "--hidden-import",
+        "src.version_data",
         "--onedir",  # Create a directory bundle
         "--windowed",  # No console window
     ]
