@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.11.0 (2026-07-29)
+
+### Features
+
+- Multi endpoint presets with automatic failover
+  ([`370dafe`](https://github.com/guozhijian611/hf-model-downloader/commit/370dafe7c45a78458696c1a0e05b7672eca0bd0e))
+
+
 ## v0.10.3 (2026-07-29)
 
 ### Bug Fixes
