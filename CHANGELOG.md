@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.9.0 (2026-07-29)
+
+### Bug Fixes
+
+- **ci**: Stop release pipeline from hanging on Intel mac runners
+  ([`8976ed8`](https://github.com/guozhijian611/hf-model-downloader/commit/8976ed8c7667d83fa56611c2456b861b81389daa))
+
+### Features
+
+- Embed release version and auto-download in-place updates
+  ([`8f58142`](https://github.com/guozhijian611/hf-model-downloader/commit/8f581427ce962d57186e5651fb700c65e4e1319d))
+
+
 ## v0.8.2 (2026-07-29)
 
 ### Continuous Integration
