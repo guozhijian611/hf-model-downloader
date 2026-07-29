@@ -54,6 +54,23 @@ def format_rate(bps: float) -> str:
     return f"{format_bytes(bps)}/s"
 
 
+def format_rate_compact(bps: float) -> str:
+    """Short rate label for chart axes (fits narrow Y margin)."""
+    n = max(0.0, float(bps))
+    units = ("B", "K", "M", "G", "T")
+    i = 0
+    while n >= 1024.0 and i < len(units) - 1:
+        n /= 1024.0
+        i += 1
+    if i == 0:
+        return f"{int(n)}"
+    if n >= 100:
+        return f"{n:.0f}{units[i]}"
+    if n >= 10:
+        return f"{n:.1f}{units[i]}"
+    return f"{n:.2f}{units[i]}"
+
+
 def format_duration(seconds: float) -> str:
     seconds = max(0, int(seconds))
     h, rem = divmod(seconds, 3600)

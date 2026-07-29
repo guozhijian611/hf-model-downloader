@@ -160,6 +160,58 @@ class DownloadProgressPanel(QFrame):
         if self.tracker.scan_directory():
             self.refresh_view()
 
+    def apply_scan_hits(self, hits: list[tuple[str, int]]) -> None:
+        """Apply background scan results: list of (display_name, size)."""
+        import time as _time
+
+        from .progress_tracker import FileProgress
+
+        now = _time.time()
+        found: set[str] = set()
+        changed = False
+        for name, size in hits[:40]:
+            key = self.tracker._short_name(name)
+            found.add(key)
+            rate = 0.0
+            prev = self.tracker._disk_prev.get(key)
+            if prev is not None:
+                prev_size, prev_t = prev
+                dt = max(1e-3, now - prev_t)
+                delta = size - prev_size
+                if delta >= 0:
+                    rate = delta / dt
+            self.tracker._disk_prev[key] = (size, now)
+            existing = self.tracker.files.get(key)
+            if (
+                existing
+                and existing.source == "log"
+                and (now - existing.updated_at) < 5
+            ):
+                continue
+            fp = existing or FileProgress(name=key, source="disk")
+            fp.done_bytes = int(size)
+            if rate > 0:
+                fp.rate_bps = rate
+            fp.status = "下载中"
+            fp.updated_at = now
+            fp.source = "disk"
+            self.tracker.files[key] = fp
+            changed = True
+
+        for key, fp in list(self.tracker.files.items()):
+            if fp.source != "disk" or key in found:
+                continue
+            if fp.status == "下载中" and (now - fp.updated_at) > 8:
+                fp.status = "完成"
+                fp.pct = 100.0
+                fp.updated_at = now
+                changed = True
+
+        if len(self.tracker.files) > 60:
+            self.tracker._prune_stale(now)
+        if changed or hits:
+            self.refresh_view()
+
     def reset(self) -> None:
         self.tracker.reset()
         self.table.setRowCount(0)
@@ -202,7 +254,7 @@ class DownloadProgressPanel(QFrame):
             f"速度 {format_rate(summary['active_rate_bps'])}"
         )
 
-        rows = self.tracker.recent_files(limit=50)
+        rows = self.tracker.recent_files(limit=20)
         self.empty_hint.setVisible(len(rows) == 0)
         self.table.setRowCount(len(rows))
         for i, fp in enumerate(rows):

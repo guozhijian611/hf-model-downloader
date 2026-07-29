@@ -440,60 +440,94 @@ class DownloadProgressTracker:
         return root if root.is_dir() else None
 
     def _iter_incomplete_files(self, root: Path) -> list[tuple[Path, int]]:
-        """Find incomplete / partial download files under root."""
-        out: list[tuple[Path, int]] = []
-        # Cap walk cost for huge datasets
-        max_files = 400
-        count = 0
-        for dirpath, dirnames, filenames in __import__("os").walk(root):
-            # prune noisy dirs
-            dirnames[:] = [
-                d
-                for d in dirnames
-                if d not in _SKIP_DIR_NAMES and not d.startswith(".")
-            ]
-            # but allow .cache for hf incomplete
-            base = Path(dirpath)
-            # re-add .cache/huggingface if present
-            if (base / ".cache").is_dir() and ".cache" not in dirnames:
-                dirnames.append(".cache")
+        """Find incomplete files quickly — prefer HF cache, hard budget."""
+        import os
+        import time as _time
 
-            for name in filenames:
-                count += 1
-                if count > 50_000:
-                    return out
-                lower = name.lower()
-                is_incomplete = (
-                    lower.endswith(".incomplete")
-                    or lower.endswith(".aria2")
-                    or lower.endswith(".tmp")
-                    or lower.endswith(".part")
-                    or ".incomplete." in lower
-                )
-                if not is_incomplete:
-                    # hf download temp: *.lock skip
-                    if lower.endswith(".lock"):
-                        continue
-                    # also show recently large growing files in download cache
-                    if ".cache" in Path(dirpath).parts and lower.endswith(
-                        (".bin", ".safetensors", ".gguf", ".parquet", ".arrow", ".zip")
-                    ):
-                        pass  # could include; skip to reduce noise
-                    else:
-                        continue
-                path = Path(dirpath) / name
-                try:
-                    size = path.stat().st_size
-                except OSError:
-                    continue
-                if size <= 0:
-                    continue
+        out: list[tuple[Path, int]] = []
+        deadline = _time.monotonic() + 0.35  # hard cap so UI never freezes
+        max_hits = 40
+        max_stat = 800  # max files we even look at
+
+        # Prefer known HF/aria2 hotspots first (cheap, high signal).
+        priority_dirs: list[Path] = []
+        for rel in (
+            Path(".cache") / "huggingface" / "download",
+            Path(".cache") / "huggingface",
+            Path(".cache"),
+        ):
+            p = root / rel
+            if p.is_dir():
+                priority_dirs.append(p)
+        priority_dirs.append(root)
+
+        seen_dirs: set[str] = set()
+        stats = 0
+
+        def _consider(path: Path) -> None:
+            nonlocal stats
+            if len(out) >= max_hits or _time.monotonic() > deadline:
+                return
+            stats += 1
+            if stats > max_stat:
+                return
+            try:
+                size = path.stat().st_size
+            except OSError:
+                return
+            if size > 0:
                 out.append((path, size))
-                if len(out) >= max_files:
-                    return out
-        # Sort by size desc so biggest active shards surface first
+
+        for base in priority_dirs:
+            key = str(base.resolve()) if base.exists() else str(base)
+            if key in seen_dirs:
+                continue
+            seen_dirs.add(key)
+            if _time.monotonic() > deadline or len(out) >= max_hits:
+                break
+
+            # Shallow-first walk with aggressive pruning.
+            for dirpath, dirnames, filenames in os.walk(base):
+                if _time.monotonic() > deadline or len(out) >= max_hits:
+                    break
+                if dirpath != str(base):
+                    depth = Path(dirpath).relative_to(base).parts
+                else:
+                    depth = ()
+                # Don't recurse forever into huge shard trees.
+                if len(depth) > 4:
+                    dirnames[:] = []
+                    continue
+                # Prune junk; keep .cache only at top
+                pruned = []
+                for d in dirnames:
+                    if d in _SKIP_DIR_NAMES:
+                        continue
+                    if d.startswith(".") and d != ".cache":
+                        continue
+                    pruned.append(d)
+                dirnames[:] = pruned
+
+                for name in filenames:
+                    if _time.monotonic() > deadline or len(out) >= max_hits:
+                        break
+                    lower = name.lower()
+                    if not (
+                        lower.endswith(".incomplete")
+                        or lower.endswith(".aria2")
+                        or lower.endswith(".part")
+                        or ".incomplete." in lower
+                    ):
+                        continue
+                    _consider(Path(dirpath) / name)
+
+                # Only full-walk the first priority cache dir deeply;
+                # for repo root, stop after one level of incomplete hits.
+                if base == root and len(depth) >= 1 and len(out) >= 8:
+                    dirnames[:] = []
+
         out.sort(key=lambda x: -x[1])
-        return out
+        return out[:max_hits]
 
     @staticmethod
     def _rel_name(root: Path, path: Path) -> str:
@@ -506,6 +540,28 @@ class DownloadProgressTracker:
             if rel.lower().endswith(suf):
                 rel = rel[: -len(suf)]
                 break
+        # Hash-like cache blobs: show short tail
+        parts = rel.replace("\\", "/").split("/")
+        name = parts[-1]
+        if len(name) > 28 and not any(
+            name.endswith(ext)
+            for ext in (
+                ".parquet",
+                ".safetensors",
+                ".bin",
+                ".gguf",
+                ".json",
+                ".txt",
+                ".arrow",
+            )
+        ):
+            # e.g. shards/000/<hash> → shards/000/<hash[:10]…>
+            short = name[:10] + "…" + name[-4:] if len(name) > 16 else name
+            if len(parts) >= 2:
+                return f"{parts[-2]}/{short}"
+            return short
+        if len(parts) > 2:
+            return "/".join(parts[-2:])
         return rel.replace("\\", "/")
 
     def _prune_stale(self, now: float) -> None:

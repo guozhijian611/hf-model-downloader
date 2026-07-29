@@ -1100,18 +1100,26 @@ class MainWindow(QMainWindow):
         if self.stall_restart_checkbox.isChecked():
             self._stall_watch_timer.start()
 
-        # Bind monitors to this download job
-        try:
-            save_path = params.get("save_path")
-            repo_id = params.get("repo_id")
-            self._monitor_window.set_watch_path(save_path)
-            self._monitor_window.file_panel.set_scan_root(save_path, repo_id=repo_id)
-            # Auto-open monitor when download starts
-            if not self._monitor_window.isVisible():
-                self.show_monitor_window()
-            self._monitor_window.start_session(reset=bool(clear_log))
-        except Exception:
-            logger.exception("Failed to prepare monitor window")
+        # Prepare monitors AFTER UI updates — never block download start.
+        # (Full-dir incomplete scans used to freeze the UI on large datasets.)
+        def _prep_monitor() -> None:
+            try:
+                save_path = params.get("save_path")
+                repo_id = params.get("repo_id")
+                self._monitor_window.set_watch_path(save_path)
+                self._monitor_window.file_panel.set_scan_root(
+                    save_path, repo_id=repo_id
+                )
+                # Only auto-open if user already had it open / wants it
+                if self._monitor_window.isVisible():
+                    self._monitor_window.start_session(reset=bool(clear_log))
+                else:
+                    # Soft-start session stats without forcing window open
+                    self._monitor_window.start_session(reset=bool(clear_log))
+            except Exception:
+                logger.exception("Failed to prepare monitor window")
+
+        QTimer.singleShot(0, _prep_monitor)
 
         if clear_log:
             self.log_text.clear()

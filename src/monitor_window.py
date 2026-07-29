@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QPoint, QRect, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QPoint, QRect, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QCloseEvent, QGuiApplication
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -16,6 +16,33 @@ from PyQt6.QtWidgets import (
 
 from .download_progress_panel import DownloadProgressPanel
 from .net_monitor_panel import NetMonitorPanel
+from .progress_tracker import DownloadProgressTracker
+
+
+class _DirScanThread(QThread):
+    """Background incomplete-file scan so UI never freezes."""
+
+    result_ready = pyqtSignal(list)  # list[tuple[str, int]] rel_or_path, size
+
+    def __init__(self, tracker: DownloadProgressTracker, parent=None) -> None:
+        super().__init__(parent)
+        self._tracker = tracker
+
+    def run(self) -> None:
+        try:
+            root = self._tracker._resolve_scan_dir()
+            if root is None:
+                self.result_ready.emit([])
+                return
+            hits = self._tracker._iter_incomplete_files(root)
+            # Serialize as (display_name, size) on worker thread
+            payload: list[tuple[str, int]] = []
+            for path, size in hits:
+                name = self._tracker._rel_name(root, path)
+                payload.append((name, size))
+            self.result_ready.emit(payload)
+        except Exception:
+            self.result_ready.emit([])
 
 
 class MonitorWindow(QMainWindow):
@@ -25,23 +52,40 @@ class MonitorWindow(QMainWindow):
     prefs_changed = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        # Parent kept for lifetime; window is independent (not modal).
         super().__init__(parent)
         self.setWindowTitle("下载监控")
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, False)
-        self.setMinimumSize(420, 520)
-        self.resize(480, 640)
+        self.setMinimumSize(400, 480)
+        self.resize(440, 600)
+        self.setStyleSheet(
+            """
+            QMainWindow { background: #ffffff; }
+            QPushButton {
+                padding: 4px 10px;
+                border: 1px solid #ddd;
+                border-radius: 6px;
+                background: #fafafa;
+            }
+            QPushButton:hover { background: #f0f0f0; }
+            QComboBox {
+                padding: 3px 6px;
+                border: 1px solid #ddd;
+                border-radius: 6px;
+                background: #fff;
+            }
+            """
+        )
 
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(8)
+        root.setContentsMargins(12, 10, 12, 12)
+        root.setSpacing(10)
 
         toolbar = QHBoxLayout()
-        title = QLabel("📊 下载监控")
-        title.setStyleSheet("font-size: 14px; font-weight: 600;")
+        title = QLabel("下载监控")
+        title.setStyleSheet("font-size: 15px; font-weight: 700; color: #1a1a1a;")
         toolbar.addWidget(title)
         toolbar.addStretch()
 
@@ -50,7 +94,7 @@ class MonitorWindow(QMainWindow):
         self.pin_checkbox.toggled.connect(self._on_pin_toggled)
         toolbar.addWidget(self.pin_checkbox)
 
-        self.dock_right_btn = QPushButton("贴到主窗右侧")
+        self.dock_right_btn = QPushButton("贴右侧")
         self.dock_right_btn.setToolTip("将本窗移到主窗口右边")
         self.dock_right_btn.clicked.connect(self.place_right_of_parent)
         toolbar.addWidget(self.dock_right_btn)
@@ -58,35 +102,24 @@ class MonitorWindow(QMainWindow):
 
         self.net_panel = NetMonitorPanel()
         self.net_panel.set_expanded(True)
-        # In floating window, collapse chrome is less useful — keep body open.
         self.net_panel.toggle_btn.setEnabled(False)
-        self.net_panel.toggle_btn.setText("网络 / 磁盘")
         self.net_panel.prefs_changed.connect(self.prefs_changed.emit)
         root.addWidget(self.net_panel)
 
         self.file_panel = DownloadProgressPanel()
         self.file_panel.set_expanded(True)
         self.file_panel.toggle_btn.setEnabled(False)
-        self.file_panel.toggle_btn.setText("文件进度")
         self.file_panel.prefs_changed.connect(self.prefs_changed.emit)
         root.addWidget(self.file_panel, stretch=1)
 
-        tip = QLabel(
-            "提示：huggingface-hub 日志往往只有总体进度；"
-            "分文件列表会结合下载目录扫描 incomplete 文件。"
-        )
-        tip.setWordWrap(True)
-        tip.setStyleSheet("color: #777; font-size: 11px;")
-        root.addWidget(tip)
-
-        # Dir scan timer (complements log parsing)
+        # Dir scan: infrequent + background thread
         self._scan_timer = QTimer(self)
-        self._scan_timer.setInterval(2000)
-        self._scan_timer.timeout.connect(self._on_scan_tick)
+        self._scan_timer.setInterval(5000)
+        self._scan_timer.timeout.connect(self._request_scan)
         self._watch_dir: str | None = None
         self._scan_active = False
-
-    # ----- public API (proxied for MainWindow) -----
+        self._scan_thread: _DirScanThread | None = None
+        self._scan_busy = False
 
     def set_watch_path(self, path: str | None) -> None:
         self._watch_dir = (path or "").strip() or None
@@ -100,6 +133,8 @@ class MonitorWindow(QMainWindow):
         self._scan_active = True
         if not self._scan_timer.isActive():
             self._scan_timer.start()
+        # First scan after a short delay — never block download start
+        QTimer.singleShot(1500, self._request_scan)
 
     def stop_session(self) -> None:
         self._scan_active = False
@@ -109,28 +144,25 @@ class MonitorWindow(QMainWindow):
 
     def stop(self) -> None:
         self._scan_timer.stop()
+        self._scan_active = False
+        if self._scan_thread and self._scan_thread.isRunning():
+            self._scan_thread.wait(500)
         self.net_panel.stop()
 
     def place_right_of_parent(self) -> None:
-        """Move this window to the right of the parent main window."""
         parent = self.parent()
         if parent is None or not isinstance(parent, QWidget):
             self._ensure_on_screen()
             return
         main: QWidget = parent.window() if parent.window() else parent
         mg = main.frameGeometry()
-        # Prefer same top, to the right with a small gap
-        x = mg.right() + 8
-        y = mg.top()
-        self.move(x, y)
+        self.move(mg.right() + 8, mg.top())
         self._ensure_on_screen()
 
     def show_and_place(self) -> None:
         self.show()
         self.raise_()
-        self.activateWindow()
-        # Delay place so frameGeometry of main is valid
-        QTimer.singleShot(50, self.place_right_of_parent)
+        QTimer.singleShot(30, self.place_right_of_parent)
 
     def _ensure_on_screen(self) -> None:
         screen = QGuiApplication.screenAt(self.pos())
@@ -142,7 +174,6 @@ class MonitorWindow(QMainWindow):
         geo = self.frameGeometry()
         x = min(max(geo.x(), avail.x()), avail.right() - geo.width() + 1)
         y = min(max(geo.y(), avail.y()), avail.bottom() - geo.height() + 1)
-        # If it would hang mostly off the right edge, put it left of main
         parent = self.parent()
         if parent is not None and isinstance(parent, QWidget):
             main = parent.window() if parent.window() else parent
@@ -153,16 +184,30 @@ class MonitorWindow(QMainWindow):
 
     def _on_pin_toggled(self, pinned: bool) -> None:
         self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, pinned)
-        # Re-show required after changing window flags
         self.show()
 
-    def _on_scan_tick(self) -> None:
+    def _request_scan(self) -> None:
+        if not self._scan_active or self._scan_busy:
+            return
+        if self._scan_thread and self._scan_thread.isRunning():
+            return
+        self._scan_busy = True
+        thread = _DirScanThread(self.file_panel.tracker, self)
+        thread.result_ready.connect(self._on_scan_result)
+        thread.finished.connect(lambda: setattr(self, "_scan_busy", False))
+        thread.finished.connect(thread.deleteLater)
+        self._scan_thread = thread
+        thread.start()
+
+    def _on_scan_result(self, payload: list) -> None:
         if not self._scan_active:
             return
-        self.file_panel.scan_directory()
+        try:
+            self.file_panel.apply_scan_hits(payload)
+        except Exception:
+            pass
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
-        # Hide instead of destroy so MainWindow can reopen quickly
         event.ignore()
         self.hide()
         self.closed.emit()
