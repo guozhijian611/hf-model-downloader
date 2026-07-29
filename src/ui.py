@@ -1,10 +1,11 @@
 import os
 import platform
 
-from PyQt6.QtCore import QSize, Qt, QUrl
+from PyQt6.QtCore import QSize, Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices, QIcon
 from PyQt6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -18,13 +19,15 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from .app_settings import load_form_settings, save_form_settings
 from .hf_hub_env import resolve_hf_endpoint
+from .proxy_env import normalize_proxy
 from .resource_utils import get_asset_path
 from .unified_downloader import UnifiedDownloadWorker
 
-GITHUB_REPO_URL = "https://github.com/samzong/hf-model-downloader"
-AUTHOR_NAME = "samzong"
-AUTHOR_GITHUB_URL = "https://github.com/samzong"
+GITHUB_REPO_URL = "https://github.com/guozhijian611/hf-model-downloader"
+AUTHOR_NAME = "guozhijian611"
+AUTHOR_GITHUB_URL = "https://github.com/guozhijian611"
 
 
 class MainWindow(QMainWindow):
@@ -118,17 +121,19 @@ class MainWindow(QMainWindow):
         help_frame.setFrameStyle(QFrame.Shape.StyledPanel | QFrame.Shadow.Raised)
         help_layout = QVBoxLayout(help_frame)
 
-        help_title = QLabel("📖 Quick Guide")
+        help_title = QLabel("📖 快速指南")
         help_title.setStyleSheet("font-weight: bold; font-size: 12px;")
         help_layout.addWidget(help_title)
 
         guide_content_layout = QHBoxLayout()
 
         help_text = QLabel(
-            "1. Select platform\n"
-            "2. Enter model ID (e.g., 'bert-base-uncased')\n"
-            "3. Choose save location\n"
-            "4. Click Download (add token for private repos)\n"
+            "1. 选择平台（Hugging Face / ModelScope）\n"
+            "2. 填写模型或数据集 ID\n"
+            "3. 选择保存目录\n"
+            "4. 可选：Token / 代理\n"
+            "5. 建议勾选「失败自动重试」（断点续传）\n"
+            "6. 点击下载（会记住上次输入）\n"
         )
         help_text.setWordWrap(True)
         help_text.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -136,15 +141,15 @@ class MainWindow(QMainWindow):
 
         links_layout = QVBoxLayout()
         links_layout.addStretch()
-        self.browse_models_btn = QPushButton("🔍 Browse Models")
+        self.browse_models_btn = QPushButton("🔍 浏览模型")
         self.browse_models_btn.setMaximumWidth(150)
         self.browse_models_btn.setFixedHeight(standard_button_height)
         self.browse_models_btn.clicked.connect(self.open_models_page)
-        self.browse_datasets_btn = QPushButton("📊 Browse Datasets")
+        self.browse_datasets_btn = QPushButton("📊 浏览数据集")
         self.browse_datasets_btn.setMaximumWidth(150)
         self.browse_datasets_btn.setFixedHeight(standard_button_height)
         self.browse_datasets_btn.clicked.connect(self.open_datasets_page)
-        self.get_token_btn = QPushButton("🔑 Get Token")
+        self.get_token_btn = QPushButton("🔑 获取 Token")
         self.get_token_btn.setMaximumWidth(150)
         self.get_token_btn.setFixedHeight(standard_button_height)
         self.get_token_btn.clicked.connect(self.open_token_page)
@@ -171,7 +176,7 @@ class MainWindow(QMainWindow):
         self.platform_combo.hide()
 
         type_layout = QHBoxLayout()
-        type_label = QLabel("Type:")
+        type_label = QLabel("类型:")
         self.type_combo = QComboBox()
         self.type_combo.addItems(["Model", "Dataset"])
         self.type_combo.setCurrentText("Model")
@@ -182,17 +187,17 @@ class MainWindow(QMainWindow):
         layout.addLayout(type_layout)
 
         repo_layout = QHBoxLayout()
-        self.repo_label = QLabel("Model ID:")
+        self.repo_label = QLabel("模型 ID:")
         self.repo_input = QLineEdit()
-        self.repo_input.setPlaceholderText("e.g., qwen/Qwen2.5-Coder-1.5B-Instruct")
+        self.repo_input.setPlaceholderText("例如：qwen/Qwen2.5-Coder-1.5B-Instruct")
         repo_layout.addWidget(self.repo_label)
         repo_layout.addWidget(self.repo_input)
         layout.addLayout(repo_layout)
 
         path_layout = QHBoxLayout()
-        path_label = QLabel("Save Path:")
+        path_label = QLabel("保存路径:")
         self.path_input = QLineEdit()
-        browse_button = QPushButton("Browse")
+        browse_button = QPushButton("浏览")
         browse_button.clicked.connect(self.browse_path)
         path_layout.addWidget(path_label)
         path_layout.addWidget(self.path_input)
@@ -202,9 +207,7 @@ class MainWindow(QMainWindow):
         token_layout = QHBoxLayout()
         token_label = QLabel("Token:")
         self.token_input = QLineEdit()
-        self.token_input.setPlaceholderText(
-            "Optional: For private models or higher rate limits"
-        )
+        self.token_input.setPlaceholderText("可选：私有仓库或提高限流额度")
         token_layout.addWidget(token_label)
         token_layout.addWidget(self.token_input)
         layout.addLayout(token_layout)
@@ -213,16 +216,42 @@ class MainWindow(QMainWindow):
         endpoint_label = QLabel("Endpoint:")
         self.endpoint_input = QLineEdit()
         self.endpoint_input.setText("https://hf-mirror.com")
-        self.endpoint_input.setPlaceholderText("default: https://hf-mirror.com")
+        self.endpoint_input.setPlaceholderText("默认：https://hf-mirror.com")
         endpoint_layout.addWidget(endpoint_label)
         endpoint_layout.addWidget(self.endpoint_input)
         layout.addLayout(endpoint_layout)
 
+        proxy_layout = QHBoxLayout()
+        proxy_label = QLabel("代理:")
+        self.proxy_enabled = QCheckBox("启用")
+        self.proxy_enabled.setChecked(False)
+        self.proxy_input = QLineEdit()
+        self.proxy_input.setPlaceholderText(
+            "例如：http://127.0.0.1:7890 或 socks5://127.0.0.1:1080"
+        )
+        self.proxy_input.setEnabled(False)
+        self.proxy_enabled.toggled.connect(self.proxy_input.setEnabled)
+        proxy_layout.addWidget(proxy_label)
+        proxy_layout.addWidget(self.proxy_enabled)
+        proxy_layout.addWidget(self.proxy_input)
+        layout.addLayout(proxy_layout)
+
+        retry_layout = QHBoxLayout()
+        self.auto_retry_checkbox = QCheckBox("失败自动重试直至完成")
+        self.auto_retry_checkbox.setChecked(True)
+        self.auto_retry_checkbox.setToolTip(
+            "下载中断或失败时自动重试，已下载部分会断点续传；"
+            "点击「停止」可结束重试循环。"
+        )
+        retry_layout.addWidget(self.auto_retry_checkbox)
+        retry_layout.addStretch()
+        layout.addLayout(retry_layout)
+
         button_layout = QHBoxLayout()
-        self.download_button = QPushButton("Download")
+        self.download_button = QPushButton("下载")
         self.download_button.setFixedHeight(standard_button_height)
         self.download_button.clicked.connect(self.start_download)
-        self.stop_button = QPushButton("Stop")
+        self.stop_button = QPushButton("停止")
         self.stop_button.setFixedHeight(standard_button_height)
         self.stop_button.clicked.connect(self.stop_download)
         self.stop_button.setEnabled(False)
@@ -240,7 +269,7 @@ class MainWindow(QMainWindow):
 
         footer_layout.addStretch()
 
-        github_btn = QPushButton("View on GitHub")
+        github_btn = QPushButton("在 GitHub 查看")
         github_btn.setFlat(True)
         github_btn.setStyleSheet(
             "QPushButton { "
@@ -252,7 +281,7 @@ class MainWindow(QMainWindow):
         )
         footer_layout.addWidget(github_btn)
 
-        author_btn = QPushButton(f"Created by {AUTHOR_NAME}")
+        author_btn = QPushButton(f"作者 {AUTHOR_NAME}")
         author_btn.setFlat(True)
         author_btn.setStyleSheet(
             "QPushButton { "
@@ -271,11 +300,18 @@ class MainWindow(QMainWindow):
         self._set_dynamic_minimum_height()
 
         self.download_worker = None
+        self._user_stopped = False
+        self._retry_attempt = 0
+        self._download_params = None
+        self._retry_timer = QTimer(self)
+        self._retry_timer.setSingleShot(True)
+        self._retry_timer.timeout.connect(self._on_retry_timer)
+        self._load_settings()
 
     def _set_dynamic_minimum_height(self):
         platform_icons_height = 40
-        help_section_height = 200
-        form_fields_height = 200
+        help_section_height = 220
+        form_fields_height = 270
         buttons_height = 40
         log_minimum_height = 100
         footer_height = 40
@@ -294,7 +330,68 @@ class MainWindow(QMainWindow):
         self.setMinimumHeight(total_height)
         self.setMinimumWidth(800)
 
+    def _load_settings(self):
+        """Restore last-used form values."""
+        data = load_form_settings()
+        platform = data["platform"]
+        if platform not in ("Hugging Face", "ModelScope"):
+            platform = "Hugging Face"
+
+        self.platform_combo.blockSignals(True)
+        self.platform_combo.setCurrentText(platform)
+        self.platform_combo.blockSignals(False)
+
+        if platform == "ModelScope":
+            self.ms_button.setChecked(True)
+        else:
+            self.hf_button.setChecked(True)
+
+        repo_type = data["repo_type"]
+        if repo_type not in ("Model", "Dataset"):
+            repo_type = "Model"
+        self.type_combo.blockSignals(True)
+        self.type_combo.setCurrentText(repo_type)
+        self.type_combo.blockSignals(False)
+        self.on_type_changed(repo_type)
+
+        if data["repo_id"]:
+            self.repo_input.setText(data["repo_id"])
+        if data["save_path"]:
+            self.path_input.setText(data["save_path"])
+        if data["token"]:
+            self.token_input.setText(data["token"])
+
+        endpoint = data["endpoint"]
+        if endpoint:
+            self.endpoint_input.setText(endpoint)
+        elif platform == "ModelScope":
+            self.endpoint_input.setText("https://modelscope.cn")
+        else:
+            self.endpoint_input.setText("https://hf-mirror.com")
+
+        self.proxy_enabled.setChecked(bool(data["proxy_enabled"]))
+        self.proxy_input.setText(data["proxy"] or "")
+        self.proxy_input.setEnabled(self.proxy_enabled.isChecked())
+        self.auto_retry_checkbox.setChecked(bool(data.get("auto_retry", True)))
+
+    def _save_settings(self):
+        """Persist current form values for next launch."""
+        save_form_settings(
+            platform=self.platform_combo.currentText(),
+            repo_type=self.type_combo.currentText(),
+            repo_id=self.repo_input.text().strip(),
+            save_path=self.path_input.text().strip(),
+            token=self.token_input.text().strip(),
+            endpoint=self.endpoint_input.text().strip(),
+            proxy=self.proxy_input.text().strip(),
+            proxy_enabled=self.proxy_enabled.isChecked(),
+            auto_retry=self.auto_retry_checkbox.isChecked(),
+        )
+
     def closeEvent(self, event):
+        self._save_settings()
+        self._user_stopped = True
+        self._retry_timer.stop()
         if self.download_worker and self.download_worker.isRunning():
             self.download_worker.finished.disconnect()
             self.download_worker.error.disconnect()
@@ -344,18 +441,32 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl("https://huggingface.co/settings/tokens"))
 
     def on_type_changed(self, type_text):
-        # platform = self.platform_combo.currentText()
         if type_text == "Dataset":
-            self.repo_label.setText("Dataset ID:")
-            self.repo_input.setPlaceholderText("e.g., baicai003/Llama3-Chinese-dataset")
+            self.repo_label.setText("数据集 ID:")
+            self.repo_input.setPlaceholderText("例如：baicai003/Llama3-Chinese-dataset")
         else:
-            self.repo_label.setText("Model ID:")
-            self.repo_input.setPlaceholderText("e.g., deepseek-ai/DeepSeek-R1")
+            self.repo_label.setText("模型 ID:")
+            self.repo_input.setPlaceholderText("例如：deepseek-ai/DeepSeek-R1")
 
     def browse_path(self):
-        path = QFileDialog.getExistingDirectory(self, "Select Save Directory")
+        path = QFileDialog.getExistingDirectory(self, "选择保存目录")
         if path:
             self.path_input.setText(path)
+
+    @staticmethod
+    def _retry_delay_seconds(attempt: int) -> int:
+        """Exponential backoff: 3s, 6s, 12s, 24s, 48s, then cap at 60s."""
+        return min(60, 3 * (2 ** min(max(attempt, 1) - 1, 4)))
+
+    def _set_downloading_ui(self, active: bool):
+        self.download_button.setEnabled(not active)
+        self.stop_button.setEnabled(active)
+        if active:
+            self.stop_button.setStyleSheet(
+                "QPushButton { background-color: #ff4444; color: white; }"
+            )
+        else:
+            self.stop_button.setStyleSheet("")
 
     def start_download(self):
         repo_id = self.repo_input.text().strip()
@@ -363,6 +474,12 @@ class MainWindow(QMainWindow):
         token = self.token_input.text().strip() or None
         repo_type = self.type_combo.currentText().lower()
         platform = self.platform_combo.currentText()
+        proxy = None
+        if self.proxy_enabled.isChecked():
+            proxy = normalize_proxy(self.proxy_input.text())
+            if not proxy:
+                self.update_status("错误：已启用代理，但代理地址为空", error=True)
+                return
 
         endpoint = self.endpoint_input.text().strip()
         if not endpoint:
@@ -372,30 +489,62 @@ class MainWindow(QMainWindow):
                 endpoint = resolve_hf_endpoint(None)
 
         if not repo_id:
-            repo_type_text = "model ID" if repo_type == "model" else "dataset ID"
-            self.update_status(f"Error: Please enter a {repo_type_text}", error=True)
+            repo_type_text = "模型 ID" if repo_type == "model" else "数据集 ID"
+            self.update_status(f"错误：请填写{repo_type_text}", error=True)
             return
 
         if not save_path:
-            self.update_status("Error: Please select a save path", error=True)
+            self.update_status("错误：请选择保存路径", error=True)
             return
 
-        self.download_button.setEnabled(False)
-        self.stop_button.setEnabled(True)
-        self.stop_button.setStyleSheet(
-            "QPushButton { background-color: #ff4444; color: white; }"
-        )
-        self.update_status("Initializing download...")
-        self.log_text.clear()
+        self._save_settings()
+        self._user_stopped = False
+        self._retry_attempt = 0
+        self._retry_timer.stop()
+        self._download_params = {
+            "platform": "modelscope" if platform == "ModelScope" else "huggingface",
+            "repo_id": repo_id,
+            "save_path": save_path,
+            "token": token,
+            "endpoint": endpoint,
+            "repo_type": repo_type,
+            "proxy": proxy,
+        }
+        self._start_download_job(clear_log=True, skip_validation=False)
 
-        if platform == "ModelScope":
-            self.download_worker = UnifiedDownloadWorker(
-                "modelscope", repo_id, save_path, token, endpoint, repo_type
+    def _start_download_job(self, *, clear_log: bool, skip_validation: bool):
+        if not self._download_params:
+            return
+        if self.download_worker and self.download_worker.isRunning():
+            return
+
+        params = self._download_params
+        self._set_downloading_ui(True)
+
+        if clear_log:
+            self.log_text.clear()
+            self.update_status("正在初始化下载...")
+            if params["proxy"]:
+                self.update_status(f"使用代理：{params['proxy']}")
+            if self.auto_retry_checkbox.isChecked():
+                self.update_status(
+                    "已开启「失败自动重试直至完成」：中断后会自动续传重试"
+                )
+        elif self._retry_attempt > 0:
+            self.update_status(
+                f"正在进行第 {self._retry_attempt} 次自动重试（断点续传）..."
             )
-        else:
-            self.download_worker = UnifiedDownloadWorker(
-                "huggingface", repo_id, save_path, token, endpoint, repo_type
-            )
+
+        self.download_worker = UnifiedDownloadWorker(
+            params["platform"],
+            params["repo_id"],
+            params["save_path"],
+            params["token"],
+            params["endpoint"],
+            params["repo_type"],
+            proxy=params["proxy"],
+            skip_validation=skip_validation,
+        )
 
         self.download_worker.finished.connect(
             self.download_finished, Qt.ConnectionType.QueuedConnection
@@ -409,19 +558,24 @@ class MainWindow(QMainWindow):
         self.download_worker.log.connect(
             self.update_log, Qt.ConnectionType.QueuedConnection
         )
-
         self.download_worker.finished.connect(
+            self._on_worker_finished, Qt.ConnectionType.QueuedConnection
+        )
+        self.download_worker.error.connect(
             self._on_worker_finished, Qt.ConnectionType.QueuedConnection
         )
         self.download_worker.start()
 
     def stop_download(self):
+        self._user_stopped = True
+        self._retry_timer.stop()
+        self.update_status("正在停止下载（并取消自动重试）...")
         if self.download_worker and self.download_worker.isRunning():
             self.stop_button.setEnabled(False)
-            self.stop_button.setStyleSheet("")
-            self.update_status("Stopping download...")
             self.download_worker.cancel_download()
-            self.download_button.setEnabled(True)
+        else:
+            self._set_downloading_ui(False)
+            self.update_status("⏹️ 已停止下载")
 
     def update_status(self, message, error=False):
         if error:
@@ -438,29 +592,84 @@ class MainWindow(QMainWindow):
             self.log_text.verticalScrollBar().maximum()
         )
 
+    @staticmethod
+    def _is_non_retryable_error(error_msg: str) -> bool:
+        """True when retrying cannot fix the error (input / type / deps)."""
+        markers = (
+            "该仓库实际是",
+            "请将类型切换",
+            "请填写",
+            "请选择保存",
+            "代理地址为空",
+            "不支持的平台",
+            "failed to import",
+            "未安装",
+            "library not installed",
+        )
+        return any(marker in error_msg for marker in markers)
+
     def download_finished(self):
-        self.download_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
-        self.stop_button.setStyleSheet("")
-        self.update_status("✅ Download completed successfully!")
-        self.log_text.append("✅ Download completed successfully!")
+        self._retry_timer.stop()
+        attempts = self._retry_attempt
+        self._retry_attempt = 0
+        self._set_downloading_ui(False)
+        if attempts > 0:
+            self.update_status(f"✅ 下载完成！（期间自动重试 {attempts} 次）")
+        else:
+            self.update_status("✅ 下载完成！")
+        self.log_text.append("✅ 下载完成！")
 
     def download_error(self, error_msg):
-        self.download_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
-        self.stop_button.setStyleSheet("")
-        if "cancelled by user" in error_msg.lower():
-            self.update_status("⏹️ Download stopped by user")
-            self.log_text.append("⏹️ Download stopped by user")
-        else:
-            self.update_status(f"❌ Error: {error_msg}", error=True)
-            self.log_text.append(f"❌ Error: {error_msg}")
+        lowered = error_msg.lower()
+        is_cancel = (
+            self._user_stopped
+            or "cancelled by user" in lowered
+            or "用户已取消" in error_msg
+        )
+        if is_cancel:
+            self._retry_timer.stop()
+            self._set_downloading_ui(False)
+            self.update_status("⏹️ 已停止下载")
+            self.log_text.append("⏹️ 已停止下载")
+            return
+
+        can_retry = (
+            self.auto_retry_checkbox.isChecked()
+            and not self._user_stopped
+            and not self._is_non_retryable_error(error_msg)
+        )
+        if can_retry:
+            self._retry_attempt += 1
+            delay = self._retry_delay_seconds(self._retry_attempt)
+            self._set_downloading_ui(True)
+            self.update_status(f"下载中断：{error_msg}", error=True)
+            self.update_status(
+                f"将在 {delay} 秒后自动重试（第 {self._retry_attempt} 次）。"
+                "已下载内容会断点续传；点「停止」可取消。"
+            )
+            self._retry_timer.start(delay * 1000)
+            return
+
+        self._retry_timer.stop()
+        self._set_downloading_ui(False)
+        self.update_status(f"错误：{error_msg}", error=True)
+        self.log_text.append(f"❌ 错误：{error_msg}")
+
+    def _on_retry_timer(self):
+        if self._user_stopped:
+            self._set_downloading_ui(False)
+            return
+        if self.download_worker and self.download_worker.isRunning():
+            # Wait for previous worker to fully exit, then retry.
+            self._retry_timer.start(500)
+            return
+        self._start_download_job(clear_log=False, skip_validation=True)
 
     def _on_worker_finished(self):
         if hasattr(self, "download_worker") and self.download_worker:
             # Wait for thread to fully stop before cleanup
             if self.download_worker.isRunning():
-                self.download_worker.wait(5000)  # Wait up to 3 seconds
+                self.download_worker.wait(5000)
 
             # Clear the worker reference
             self.download_worker = None

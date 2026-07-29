@@ -26,7 +26,7 @@ jobs:
           favicon: assets/icon.ico
           logo: assets/icon.png
 
-          openSource: https://github.com/samzong/hf-model-downloader
+          openSource: https://github.com/guozhijian611/hf-model-downloader
 
           tocs: false
 
@@ -36,13 +36,13 @@ jobs:
           menus:
             Home: index.html
             About:
-              url: https://github.com/samzong
+              url: https://github.com/guozhijian611
               target: __blank
           
           cacheFileStat: true
 
           footer: |
-            Copyright © {{idocYear}} <a href="https://github.com/samzong" target="_blank">samzong</a><br />
+            Copyright © {{idocYear}} <a href="https://github.com/guozhijian611" target="_blank">guozhijian611</a><br />
             <script>
             function downloadLatest() {
               const platform = navigator.platform.toLowerCase();
@@ -53,16 +53,16 @@ jobs:
               if (platform.includes('mac')) {
                 // macOS
                 if (userAgent.includes('arm') || userAgent.includes('apple')) {
-                  downloadUrl = 'https://github.com/samzong/hf-model-downloader/releases/latest/download/hf-model-downloader-arm64.dmg';
+                  downloadUrl = 'https://github.com/guozhijian611/hf-model-downloader/releases/latest/download/hf-model-downloader-arm64.dmg';
                 } else {
-                  downloadUrl = 'https://github.com/samzong/hf-model-downloader/releases/latest/download/hf-model-downloader-x86_64.dmg';
+                  downloadUrl = 'https://github.com/guozhijian611/hf-model-downloader/releases/latest/download/hf-model-downloader-x86_64.dmg';
                 }
               } else if (platform.includes('win')) {
                 // Windows
-                downloadUrl = 'https://github.com/samzong/hf-model-downloader/releases/latest/download/hf-model-downloader-windows-x86_64.zip';
+                downloadUrl = 'https://github.com/guozhijian611/hf-model-downloader/releases/latest/download/hf-model-downloader-windows-x86_64.zip';
               } else {
                 // other
-                window.open('https://github.com/samzong/hf-model-downloader/releases/latest', '_blank');
+                window.open('https://github.com/guozhijian611/hf-model-downloader/releases/latest', '_blank');
                 return;
               }
               

@@ -45,7 +45,7 @@ lint-fix: install ## Auto-fix code issues where possible
 
 test: install ## Run tests (fast smoke tests by default)
 	@echo "Running tests..."
-	@$(UV) run pytest tests/test_hf_xet.py tests/test_hf_hub_env.py tests/test_hf_repo_type.py tests/test_download_process.py -v
+	@$(UV) run pytest tests/test_hf_xet.py tests/test_hf_hub_env.py tests/test_hf_repo_type.py tests/test_download_process.py tests/test_proxy_env.py -v
 
 test-e2e: install ## Run full end-to-end download tests (network required)
 	@echo "Running end-to-end tests..."
@@ -118,5 +118,5 @@ update-homebrew:
 	@export VERSION="$(VERSION)"; $(SCRIPTS_DIR)/homebrew-update.sh
 
 verify-release:
-	@curl -I "https://github.com/samzong/hf-model-downloader/releases/download/v$(VERSION)/$(APP_NAME)-arm64.dmg" 2>/dev/null | head -1 | grep -q "200 OK" && echo "✅ ARM64 DMG exists" || echo "⚠️ ARM64 DMG not found"
-	@curl -I "https://github.com/samzong/hf-model-downloader/releases/download/v$(VERSION)/$(APP_NAME)-x86_64.dmg" 2>/dev/null | head -1 | grep -q "200 OK" && echo "✅ x86_64 DMG exists" || echo "⚠️ x86_64 DMG not found"
+	@curl -I "https://github.com/guozhijian611/hf-model-downloader/releases/download/v$(VERSION)/$(APP_NAME)-arm64.dmg" 2>/dev/null | head -1 | grep -q "200 OK" && echo "✅ ARM64 DMG exists" || echo "⚠️ ARM64 DMG not found"
+	@curl -I "https://github.com/guozhijian611/hf-model-downloader/releases/download/v$(VERSION)/$(APP_NAME)-x86_64.dmg" 2>/dev/null | head -1 | grep -q "200 OK" && echo "✅ x86_64 DMG exists" || echo "⚠️ x86_64 DMG not found"

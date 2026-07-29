@@ -11,7 +11,7 @@ logger.setLevel(logging.INFO)
 
 def cleanup_lock_files(directory):
     """Clean up any .lock files in the directory and its subdirectories."""
-    logger.info("Cleaning up lock files (keeping downloaded chunks for resume)...")
+    logger.info("正在清理下载锁文件（保留已下载分块以便断点续传）...")
     try:
         for root, _dirs, files in os.walk(directory):
             for file in files:
@@ -19,11 +19,11 @@ def cleanup_lock_files(directory):
                     lock_file = os.path.join(root, file)
                     try:
                         os.remove(lock_file)
-                        logger.info(f"Removed lock file: {lock_file}")
+                        logger.info(f"已删除锁文件：{lock_file}")
                     except Exception as e:
-                        logger.warning(f"Could not remove lock file {lock_file}: {e!s}")
+                        logger.warning(f"无法删除锁文件 {lock_file}：{e!s}")
     except Exception as e:
-        logger.warning(f"Error while cleaning lock files: {e!s}")
+        logger.warning(f"清理锁文件时出错：{e!s}")
 
 
 def cleanup_environment():

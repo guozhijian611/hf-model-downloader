@@ -99,7 +99,7 @@ prepare_workspace() {
 
 download_release_files() {
     log_info "Downloading DMG files..."
-    local base_url="https://github.com/samzong/hf-model-downloader/releases/download/v${VERSION}"
+    local base_url="https://github.com/guozhijian611/hf-model-downloader/releases/download/v${VERSION}"
     local max_retries=10
     local retry_delay=30
     
@@ -142,11 +142,11 @@ calculate_checksums() {
 clone_tap_repository() {
     log_info "Cloning Homebrew tap repository..."
     cd "${WORK_DIR}"
-    git clone "https://${GH_PAT}@github.com/samzong/${HOMEBREW_TAP_REPO}.git"
+    git clone "https://${GH_PAT}@github.com/guozhijian611/${HOMEBREW_TAP_REPO}.git"
     cd "${HOMEBREW_TAP_REPO}"
     
     # Ensure remote URL uses token for subsequent push operations
-    git remote set-url origin "https://${GH_PAT}@github.com/samzong/${HOMEBREW_TAP_REPO}.git"
+    git remote set-url origin "https://${GH_PAT}@github.com/guozhijian611/${HOMEBREW_TAP_REPO}.git"
     
     git checkout -b "${BRANCH_NAME}"
 }
@@ -215,7 +215,7 @@ commit_and_push_changes() {
         if ! git push -u origin "$BRANCH_NAME"; then
             log_error "Failed to push branch to remote repository"
             log_error "This usually indicates insufficient token permissions"
-            log_error "Ensure GH_PAT has write access to samzong/homebrew-tap repository"
+            log_error "Ensure GH_PAT has write access to guozhijian611/homebrew-tap repository"
             exit 1
         fi
         
@@ -251,7 +251,7 @@ EOF
     curl -X POST \
         -H "Authorization: token ${GH_PAT}" \
         -H "Content-Type: application/json" \
-        "https://api.github.com/repos/samzong/${HOMEBREW_TAP_REPO}/pulls" \
+        "https://api.github.com/repos/guozhijian611/${HOMEBREW_TAP_REPO}/pulls" \
         -d "$pr_data"
     
     log_success "Pull request created successfully"

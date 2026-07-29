@@ -1,6 +1,6 @@
 ; HF Model Downloader Installer Script
 !define APPNAME "HF Model Downloader"
-!define COMPANYNAME "samzong"
+!define COMPANYNAME "guozhijian611"
 !define DESCRIPTION "A cross-platform GUI application for downloading Hugging Face models"
 ; These three must be integers
 !define VERSIONMAJOR 1
@@ -8,9 +8,9 @@
 !define VERSIONBUILD 0
 ; These will be displayed by the "Click here for support information" link in "Add/Remove Programs"
 ; It is possible to use "mailto:" links in here to open the email client
-!define HELPURL "https://github.com/samzong/hf-model-downloader" ; "Support Information" link
-!define UPDATEURL "https://github.com/samzong/hf-model-downloader/releases" ; "Product Updates" link
-!define ABOUTURL "https://github.com/samzong/hf-model-downloader" ; "Publisher" link
+!define HELPURL "https://github.com/guozhijian611/hf-model-downloader" ; "Support Information" link
+!define UPDATEURL "https://github.com/guozhijian611/hf-model-downloader/releases" ; "Product Updates" link
+!define ABOUTURL "https://github.com/guozhijian611/hf-model-downloader" ; "Publisher" link
 
 RequestExecutionLevel admin ;Require admin rights on NT6+ (When UAC is turned on)
 

@@ -92,11 +92,11 @@ jobs:
     steps:
       - name: Trigger Multi-Platform Build
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GH_TOKEN || github.token }}
         run: |
           echo "Triggering multi-platform build for release ${{ needs.release.outputs.tag }}"
           gh workflow run build-multi-platform.yml \
-            --repo samzong/hf-model-downloader \
+            --repo "${{ github.repository }}" \
             --field release_tag="${{ needs.release.outputs.tag }}" \
             --field version="${{ needs.release.outputs.version }}"
           echo "Multi-platform build workflow triggered successfully"

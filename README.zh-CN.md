@@ -9,7 +9,7 @@
   </p>
 
   <div id="download-section" style="margin: 20px 0;">
-    <a href="https://github.com/samzong/hf-model-downloader/releases" style="text-decoration: none;">
+    <a href="https://github.com/guozhijian611/hf-model-downloader/releases" style="text-decoration: none;">
       <img src="https://img.shields.io/badge/⬇%20下载适用于你的系统-28a745?style=for-the-badge&labelColor=28a745" alt="Download" />
     </a>
   </div>
@@ -17,9 +17,9 @@
   <br />
   <p>从 Hugging Face 和 ModelScope 下载模型与数据集。图形界面操作，无需折腾命令行。</p>
   <p>
-    <a href="https://github.com/samzong/hf-model-downloader/releases"><img src="https://img.shields.io/github/v/release/samzong/hf-model-downloader" alt="Release Version" /></a>
-    <a href="https://github.com/samzong/hf-model-downloader/blob/main/LICENSE"><img src="https://img.shields.io/github/license/samzong/hf-model-downloader" alt="MIT License" /></a>
-    <a href="https://deepwiki.com/samzong//hf-model-downloader"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
+    <a href="https://github.com/guozhijian611/hf-model-downloader/releases"><img src="https://img.shields.io/github/v/release/guozhijian611/hf-model-downloader" alt="Release Version" /></a>
+    <a href="https://github.com/guozhijian611/hf-model-downloader/blob/main/LICENSE"><img src="https://img.shields.io/github/license/guozhijian611/hf-model-downloader" alt="MIT License" /></a>
+    <a href="https://deepwiki.com/guozhijian611//hf-model-downloader"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
   </p>
 </div>
 
@@ -42,6 +42,8 @@
 - 支持模型与数据集两类仓库
 - 可选 Token，用于私有仓库或提高限流额度
 - 可自定义 Endpoint（HF 默认镜像、ModelScope 官方站）
+- **代理设置**：支持 HTTP/HTTPS/SOCKS 代理（如 `http://127.0.0.1:7890`）
+- **记住上次输入**：平台、类型、模型 ID、保存路径、Token、Endpoint、代理等自动恢复
 - 实时下载日志与进度展示
 - 支持停止/取消下载
 - 集成 `huggingface-hub[hf_xet]`，在可用时提升大文件下载效率
@@ -51,7 +53,7 @@
 
 ## 使用方式（普通用户）
 
-从 [Releases](https://github.com/samzong/hf-model-downloader/releases) 下载对应系统的安装包，打开即可使用。
+从 [Releases](https://github.com/guozhijian611/hf-model-downloader/releases) 下载对应系统的安装包，打开即可使用。
 
 **操作步骤：**
 
@@ -60,7 +62,10 @@
 3. 填写仓库 ID（例如 `qwen/Qwen2.5-Coder-1.5B-Instruct`）
 4. 选择保存目录
 5. 如需私有仓库访问，填写 Token
-6. 点击 **Download** 开始下载
+6. 如需代理，勾选 **Enable** 并填写代理地址（例如 `http://127.0.0.1:7890`）
+7. 点击 **Download** 开始下载
+
+表单内容会在下载或关闭窗口时自动保存，下次打开自动恢复。
 
 界面内提供「浏览模型 / 浏览数据集 / 获取 Token」快捷入口，会打开对应平台网页。
 
@@ -69,7 +74,7 @@
 依赖 [uv](https://docs.astral.sh/uv/) 管理 Python 环境（要求 Python ≥ 3.13）。
 
 ```bash
-git clone https://github.com/samzong/hf-model-downloader.git
+git clone https://github.com/guozhijian611/hf-model-downloader.git
 cd hf-model-downloader
 
 uv sync          # 安装依赖（含 huggingface-hub[hf_xet]）
@@ -126,6 +131,8 @@ hf-model-downloader/
 ├── build.py                # PyInstaller 打包脚本
 ├── src/
 │   ├── ui.py               # 主界面
+│   ├── app_settings.py     # 记住上次输入（QSettings）
+│   ├── proxy_env.py        # 代理环境变量工具
 │   ├── unified_downloader.py  # 统一下载逻辑（HF + ModelScope）
 │   ├── hf_hub_env.py       # HF 环境变量 / 镜像 / Xet
 │   ├── hf_repo_validate.py # 仓库类型校验

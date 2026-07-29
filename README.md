@@ -17,9 +17,9 @@
   <br />
   <p>Downloads models from Hugging Face and ModelScope. Has a GUI so you don't need to mess with command lines.</p>
   <p>
-    <a href="https://github.com/samzong/hf-model-downloader/releases"><img src="https://img.shields.io/github/v/release/samzong/hf-model-downloader" alt="Release Version" /></a>
-    <a href="https://github.com/samzong/hf-model-downloader/blob/main/LICENSE"><img src="https://img.shields.io/github/license/samzong/hf-model-downloader" alt="MIT License" /></a>
-    <a href="https://deepwiki.com/samzong//hf-model-downloader"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
+    <a href="https://github.com/guozhijian611/hf-model-downloader/releases"><img src="https://img.shields.io/github/v/release/guozhijian611/hf-model-downloader" alt="Release Version" /></a>
+    <a href="https://github.com/guozhijian611/hf-model-downloader/blob/main/LICENSE"><img src="https://img.shields.io/github/license/guozhijian611/hf-model-downloader" alt="MIT License" /></a>
+    <a href="https://deepwiki.com/guozhijian611//hf-model-downloader"><img src="https://deepwiki.com/badge.svg" alt="Ask DeepWiki"></a>
   </p>
 </div>
 
@@ -29,20 +29,22 @@
 
 - Downloads Hugging Face and ModelScope models through a simple GUI
 - Handles authentication tokens
+- Optional HTTP/SOCKS proxy for downloads
+- Remembers last form inputs (platform, model ID, path, token, endpoint, proxy)
 - Shows download progress
 - Works on Windows, macOS, Linux
 - Creates standalone apps you can just run
 
 ## Just want to use it?
 
-Download from [releases](https://github.com/samzong/hf-model-downloader/releases). Run the app. Done.
+Download from [releases](https://github.com/guozhijian611/hf-model-downloader/releases). Run the app. Done.
 
 ## Development
 
 Requires [uv](https://docs.astral.sh/uv/).
 
 ```bash
-git clone https://github.com/samzong/hf-model-downloader.git
+git clone https://github.com/guozhijian611/hf-model-downloader.git
 cd hf-model-downloader
 
 uv sync          # install deps (includes huggingface-hub[hf_xet])

@@ -128,7 +128,7 @@ def build_app():
                 "--icon",
                 icon_path,
                 "--osx-bundle-identifier",
-                "com.samzong.hf-model-downloader",
+                "com.guozhijian611.hf-model-downloader",
                 "--target-arch",
                 arch,  # Specify target architecture for macOS
             ]

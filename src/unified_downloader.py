@@ -22,14 +22,28 @@ from .hf_hub_env import (
     resolve_hf_endpoint,
     xet_available,
 )
-from .hf_repo_validate import hf_repo_type_mismatch_message
+from .hf_repo_validate import DEFAULT_VALIDATE_TIMEOUT_SEC, validate_hf_repo_type
+from .proxy_env import apply_proxy_env, normalize_proxy, proxies_dict
 from .utils import cleanup_environment, cleanup_lock_files
+
+PLATFORM_LABELS = {
+    "huggingface": "Hugging Face",
+    "modelscope": "ModelScope",
+}
+
+
+def _platform_label(platform: str) -> str:
+    return PLATFORM_LABELS.get(platform, platform)
+
+
+def _repo_type_label(repo_type: str) -> str:
+    return "模型" if repo_type == "model" else "数据集"
 
 
 def _abort_download(pipe, message: str) -> None:
     if pipe:
-        pipe.send(f"Error: {message}")
-    print(f"Error: {message}")
+        pipe.send(f"错误：{message}")
+    print(f"错误：{message}")
     sys.exit(1)
 
 
@@ -89,13 +103,24 @@ class LoggerManager:
 
 
 class LogHandler(logging.Handler):
+    _LEVEL_CN = {
+        "DEBUG": "调试",
+        "INFO": "信息",
+        "WARNING": "警告",
+        "ERROR": "错误",
+        "CRITICAL": "严重",
+    }
+
     def __init__(self, log_signal):
         super().__init__()
         self.log_signal = log_signal
 
     def emit(self, record):
         try:
-            msg = self.format(record)
+            level = self._LEVEL_CN.get(record.levelname, record.levelname)
+            # Keep UI logs short and Chinese-friendly.
+            stamp = self.formatTime(record, "%H:%M:%S")
+            msg = f"{stamp} [{level}] {record.getMessage()}"
             self.log_signal.emit(msg)
         except RuntimeError:
             # Signal target has been destroyed, ignore
@@ -175,6 +200,7 @@ def download_huggingface(
     endpoint: str = None,
     pipe=None,
     repo_type: str = "model",
+    proxy: str = None,
 ):
     """HuggingFace platform-specific download logic"""
     try:
@@ -184,15 +210,22 @@ def download_huggingface(
 
     resolved_endpoint = resolve_hf_endpoint(endpoint)
     apply_hf_download_env(token=token, endpoint=resolved_endpoint)
+    apply_proxy_env(proxy)
+    proxy_map = proxies_dict(proxy)
 
     repo_dir = os.path.join(save_path, model_id.split("/")[-1])
 
     if pipe:
         if not xet_available():
             pipe.send(
-                "Warning: hf_xet is not available. Xet downloads may fall back to HTTP."
+                "警告：未检测到 hf_xet，"
+                "大文件可能回退为普通 HTTP 下载（速度可能较慢）。"
             )
-        pipe.send(f"Starting HuggingFace download of {model_id}")
+        if proxy_map:
+            pipe.send(f"Hugging Face 下载使用代理：{normalize_proxy(proxy)}")
+        pipe.send(f"开始从 Hugging Face 下载：{model_id}")
+        pipe.send(f"保存目录：{repo_dir}")
+        pipe.send(f"Endpoint：{resolved_endpoint}")
 
     cpu_count = multiprocessing.cpu_count()
     max_workers = min(cpu_count + 2, 8)
@@ -217,14 +250,14 @@ def download_huggingface(
             ],
             local_files_only=False,
             etag_timeout=30,
-            proxies=None,
+            proxies=proxy_map,
             endpoint=resolved_endpoint,
         )
     except Exception as exc:
-        _abort_download(pipe, f"HuggingFace download failed: {exc}")
+        _abort_download(pipe, f"Hugging Face 下载失败：{exc}")
 
     if pipe:
-        pipe.send(f"HuggingFace download completed: {result}")
+        pipe.send(f"Hugging Face 下载完成：{result}")
 
 
 def download_modelscope(
@@ -234,6 +267,7 @@ def download_modelscope(
     endpoint: str = None,
     pipe=None,
     repo_type: str = "model",
+    proxy: str = None,
 ):
     """ModelScope platform-specific download logic"""
     try:
@@ -242,15 +276,17 @@ def download_modelscope(
     except ImportError:
         _abort_download(pipe, "ModelScope library not installed.")
 
+    apply_proxy_env(proxy)
+
     if token:
         try:
             api = HubApi()
             api.login(token)
             if pipe:
-                pipe.send("ModelScope authentication successful")
+                pipe.send("ModelScope 登录成功")
         except Exception as e:
             if pipe:
-                pipe.send(f"ModelScope authentication failed: {e!s}")
+                pipe.send(f"ModelScope 登录失败：{e!s}")
 
     if endpoint:
         os.environ["MODELSCOPE_ENDPOINT"] = endpoint
@@ -259,16 +295,18 @@ def download_modelscope(
     repo_dir = os.path.join(save_path, repo_name)
 
     if pipe:
-        pipe.send(f"Starting ModelScope download of {model_id}")
+        if normalize_proxy(proxy):
+            pipe.send(f"ModelScope 下载使用代理：{normalize_proxy(proxy)}")
+        pipe.send(f"开始从 ModelScope 下载：{model_id}")
         if repo_type == "dataset":
-            pipe.send(f"Downloading Dataset to directory: {repo_dir}")
+            pipe.send(f"正在下载数据集到：{repo_dir}")
         else:
-            pipe.send(f"Downloading Model to directory: {repo_dir}")
+            pipe.send(f"正在下载模型到：{repo_dir}")
 
     try:
         if repo_type == "dataset":
             if pipe:
-                pipe.send("Using MsDataset for dataset download...")
+                pipe.send("使用 MsDataset 下载数据集...")
 
             os.makedirs(repo_dir, exist_ok=True)
 
@@ -278,7 +316,7 @@ def download_modelscope(
             )
 
             if pipe:
-                pipe.send(f"ModelScope dataset loaded and cached to: {repo_dir}")
+                pipe.send(f"ModelScope 数据集已缓存到：{repo_dir}")
 
             result = repo_dir
         else:
@@ -298,10 +336,10 @@ def download_modelscope(
             )
 
         if pipe:
-            pipe.send(f"ModelScope download completed: {result}")
+            pipe.send(f"ModelScope 下载完成：{result}")
 
     except Exception as exc:
-        _abort_download(pipe, f"ModelScope download failed: {exc}")
+        _abort_download(pipe, f"ModelScope 下载失败：{exc}")
 
 
 def unified_download_model(
@@ -312,6 +350,7 @@ def unified_download_model(
     endpoint: str = None,
     pipe=None,
     repo_type: str = "model",
+    proxy: str = None,
 ):
     """Unified download function that delegates to platform-specific implementations"""
     try:
@@ -333,7 +372,7 @@ def unified_download_model(
 
         def signal_handler(signum, frame):
             if pipe:
-                pipe.send("Download interrupted by signal")
+                pipe.send("下载被系统信号中断")
             sys.exit(1)
 
         signal.signal(signal.SIGTERM, signal_handler)
@@ -342,20 +381,20 @@ def unified_download_model(
         try:
             if platform == "huggingface":
                 download_huggingface(
-                    model_id, save_path, token, endpoint, pipe, repo_type
+                    model_id, save_path, token, endpoint, pipe, repo_type, proxy
                 )
             elif platform == "modelscope":
                 download_modelscope(
-                    model_id, save_path, token, endpoint, pipe, repo_type
+                    model_id, save_path, token, endpoint, pipe, repo_type, proxy
                 )
             else:
-                _abort_download(pipe, f"Unsupported platform '{platform}'")
+                _abort_download(pipe, f"不支持的平台「{platform}」")
 
         except KeyboardInterrupt:
-            _abort_download(pipe, "Download cancelled by user")
+            _abort_download(pipe, "用户已取消下载")
 
     except Exception as exc:
-        _abort_download(pipe, f"Error during {platform} download: {exc}")
+        _abort_download(pipe, f"{_platform_label(platform)} 下载出错：{exc}")
     finally:
         if pipe:
             sys.stdout = old_stdout
@@ -425,6 +464,8 @@ class UnifiedDownloadWorker(QThread):
         token=None,
         endpoint=None,
         repo_type="model",
+        proxy=None,
+        skip_validation=False,
     ):
         super().__init__()
 
@@ -438,6 +479,8 @@ class UnifiedDownloadWorker(QThread):
         self.save_path = save_path
         self.token = token
         self.repo_type = repo_type
+        self.proxy = normalize_proxy(proxy)
+        self.skip_validation = bool(skip_validation)
 
         # Get platform configuration
         self._config = PLATFORM_CONFIGS[platform]
@@ -457,9 +500,11 @@ class UnifiedDownloadWorker(QThread):
 
         self.logger_manager = LoggerManager()
         self.log_handler = self.logger_manager.get_handler(self.log)
+        # Formatter kept for compatibility; LogHandler emits a Chinese-friendly line.
         self.log_handler.setFormatter(
             logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         )
+        self.log_handler.setLevel(logging.INFO)
 
         platform_logger = logging.getLogger(self._config["logger_name"])
         platform_logger.addHandler(self.log_handler)
@@ -469,7 +514,9 @@ class UnifiedDownloadWorker(QThread):
 
         self.repo_name = self.model_id.split("/")[-1]
         self.repo_dir = os.path.join(self.save_path, self.repo_name)
-        self._logger.debug(f"Initialized {platform} worker for {repo_type}.")
+        label = _platform_label(platform)
+        kind = _repo_type_label(repo_type)
+        self._logger.debug(f"已初始化 {label} 下载任务（{kind}）")
 
         self._cancel_event = threading.Event()
         self._download_process = None
@@ -485,7 +532,7 @@ class UnifiedDownloadWorker(QThread):
 
     @staticmethod
     def _isolated_download_wrapper(
-        platform, model_id, save_path, token, endpoint, pipe, repo_type
+        platform, model_id, save_path, token, endpoint, pipe, repo_type, proxy=None
     ):
         """Process-isolated download wrapper that doesn't inherit PyQt state"""
         try:
@@ -494,7 +541,14 @@ class UnifiedDownloadWorker(QThread):
 
             # Call the unified download function
             result = unified_download_model(
-                platform, model_id, save_path, token, endpoint, safe_pipe, repo_type
+                platform,
+                model_id,
+                save_path,
+                token,
+                endpoint,
+                safe_pipe,
+                repo_type,
+                proxy,
             )
 
             # Clean up pipe
@@ -571,31 +625,59 @@ class UnifiedDownloadWorker(QThread):
 
     def _run(self):
         """Run download task in isolated thread"""
+        platform_cn = _platform_label(self.platform)
+        repo_type_cn = _repo_type_label(self.repo_type)
         try:
-            self._logger.debug(f"Starting {self.platform} download worker run")
+            self._logger.info(f"开始 {platform_cn} 下载任务")
             cleanup_lock_files(self.repo_dir)
 
-            repo_type_text = "model" if self.repo_type == "model" else "dataset"
-            if self.platform == "huggingface":
-                self._safe_emit("status", "Validating repository...")
+            if self.platform == "huggingface" and not self.skip_validation:
+                timeout_sec = DEFAULT_VALIDATE_TIMEOUT_SEC
+                self._safe_emit(
+                    "status",
+                    (
+                        f"正在校验仓库类型（连接 {self.endpoint}，"
+                        f"最长 {timeout_sec} 秒）..."
+                    ),
+                )
+                self._safe_emit("log", f"仓库 ID：{self.model_id}")
+                self._safe_emit("log", f"选择类型：{repo_type_cn}")
+                self._safe_emit("log", f"Endpoint：{self.endpoint}")
+                if self.proxy:
+                    self._safe_emit("log", f"代理：{self.proxy}")
+                else:
+                    self._safe_emit("log", "代理：未启用")
+
+                apply_proxy_env(self.proxy)
                 with hf_api_client(token=self.token, endpoint=self.endpoint) as api:
-                    mismatch = hf_repo_type_mismatch_message(
+                    mismatch, warning = validate_hf_repo_type(
                         api,
                         self.model_id,
                         self.repo_type,
                         self.token,
+                        timeout_sec=timeout_sec,
                     )
                 if mismatch:
                     raise Exception(mismatch)
+                if warning:
+                    self._safe_emit("status", warning)
+                    self._safe_emit("log", f"提示：{warning}")
+                else:
+                    self._safe_emit("status", "仓库校验通过，开始下载...")
+                    self._safe_emit("log", "仓库类型校验通过")
+            elif self.platform == "huggingface" and self.skip_validation:
+                self._safe_emit("log", "重试模式：跳过仓库类型校验，直接续传下载")
 
             self._safe_emit(
                 "status",
-                f"Downloading {self.platform} {repo_type_text} to {self.repo_dir}...",
+                f"正在从 {platform_cn} 下载{repo_type_cn}到 {self.repo_dir} ...",
             )
             self._safe_emit(
                 "log",
-                f"Starting {self.platform} download {self.model_id} to {self.repo_dir}",
+                f"开始下载 {self.model_id} → {self.repo_dir}",
             )
+            if self.proxy:
+                self._safe_emit("log", f"已启用代理：{self.proxy}")
 
             self._pipe_reader, self._pipe_writer = multiprocessing.Pipe(duplex=False)
 
@@ -614,14 +696,16 @@ class UnifiedDownloadWorker(QThread):
                     self.endpoint,
                     self._pipe_writer,
                     self.repo_type,
+                    self.proxy,
                 ),
             )
             self._download_process.start()
+            self._safe_emit("log", "下载进程已启动，等待数据传输...")
 
             download_completed = False
             while self._download_process.is_alive():
                 if self._cancel_event.is_set():
-                    self._logger.debug("Cancel event detected, terminating process")
+                    self._logger.info("检测到取消请求，正在终止下载进程")
                     self._download_process.terminate()
                     break
                 self._download_process.join(timeout=0.1)
@@ -629,8 +713,8 @@ class UnifiedDownloadWorker(QThread):
             if self._download_process.exitcode == 0:
                 download_completed = True
             else:
-                self._logger.debug(
-                    f"{self.platform} exit with code: {self._download_process.exitcode}"
+                self._logger.info(
+                    f"{platform_cn} 下载进程退出码：{self._download_process.exitcode}"
                 )
 
             self._cancel_event.set()
@@ -639,25 +723,28 @@ class UnifiedDownloadWorker(QThread):
 
             if download_completed:
                 cleanup_lock_files(self.repo_dir)
-                repo_type_text = "Model" if self.repo_type == "model" else "Dataset"
                 self._safe_emit(
                     "log",
-                    f"{self.platform} {repo_type_text} downloaded to: {self.repo_dir}",
+                    f"{platform_cn}{repo_type_cn}已下载到：{self.repo_dir}",
                 )
-                self._logger.debug(f"{self.platform} download completed successfully")
+                self._logger.info(f"{platform_cn} 下载成功")
                 self._safe_emit("finished")
             elif self._cancel_event.is_set() and not download_completed:
-                raise Exception(f"{self.platform} download cancelled by user")
+                raise Exception("用户已取消下载")
             else:
-                raise Exception(f"{self.platform} download process failed")
+                raise Exception(
+                    f"{platform_cn} 下载进程失败"
+                    f"（退出码 {self._download_process.exitcode}）。"
+                    "请检查网络、代理、Token 或 Endpoint。"
+                )
 
         except Exception as e:
             error_msg = str(e)
-            self._logger.error(f"{self.platform} download failed: {error_msg}")
-            self._safe_emit("log", f"{self.platform} Error: {error_msg}")
+            self._logger.error(f"{platform_cn} 下载失败：{error_msg}")
+            self._safe_emit("log", f"错误：{error_msg}")
             self._safe_emit("error", error_msg)
         finally:
-            self._logger.debug(f"{self.platform} download worker run completed")
+            self._logger.info(f"{platform_cn} 下载任务结束")
             self._is_running = False
             if hasattr(self, "_cancel_event"):
                 self._cancel_event.set()
