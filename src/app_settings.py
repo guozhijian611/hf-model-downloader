@@ -18,6 +18,7 @@ KEY_ENDPOINT_FAILOVER = "endpoint_failover"
 KEY_PROXY = "proxy"
 KEY_PROXY_ENABLED = "proxy_enabled"
 KEY_AUTO_RETRY = "auto_retry"
+KEY_RETRY_WAIT_SEC = "retry_wait_sec"
 KEY_DOWNLOAD_BACKEND = "download_backend"
 KEY_STALL_RESTART = "stall_restart"
 KEY_STALL_TIMEOUT_SEC = "stall_timeout_sec"
@@ -45,6 +46,7 @@ def load_form_settings() -> dict:
         KEY_PROXY: s.value(KEY_PROXY, "", type=str),
         KEY_PROXY_ENABLED: s.value(KEY_PROXY_ENABLED, False, type=bool),
         KEY_AUTO_RETRY: s.value(KEY_AUTO_RETRY, True, type=bool),
+        KEY_RETRY_WAIT_SEC: s.value(KEY_RETRY_WAIT_SEC, 5, type=int),
         KEY_DOWNLOAD_BACKEND: s.value(
             KEY_DOWNLOAD_BACKEND, "huggingface-hub", type=str
         ),
@@ -68,6 +70,7 @@ def save_form_settings(
     proxy: str,
     proxy_enabled: bool,
     auto_retry: bool = True,
+    retry_wait_sec: int = 5,
     endpoint_failover: bool = True,
     download_backend: str = "huggingface-hub",
     stall_restart: bool = True,
@@ -88,6 +91,7 @@ def save_form_settings(
     s.setValue(KEY_PROXY, proxy)
     s.setValue(KEY_PROXY_ENABLED, proxy_enabled)
     s.setValue(KEY_AUTO_RETRY, auto_retry)
+    s.setValue(KEY_RETRY_WAIT_SEC, int(retry_wait_sec))
     s.setValue(KEY_DOWNLOAD_BACKEND, download_backend)
     s.setValue(KEY_STALL_RESTART, stall_restart)
     s.setValue(KEY_STALL_TIMEOUT_SEC, int(stall_timeout_sec))

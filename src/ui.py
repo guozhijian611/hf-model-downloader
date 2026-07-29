@@ -329,16 +329,27 @@ class MainWindow(QMainWindow):
             "下载过程中若长时间没有进度日志/速度，自动停止并重新开始（断点续传）。"
             "可同时配置下方「卡住时执行」命令（例如重启 v2ray 内核）。"
         )
-        stall_timeout_label = QLabel("超时(秒):")
+        stall_timeout_label = QLabel("卡住超时(秒):")
         self.stall_timeout_spin = QSpinBox()
-        self.stall_timeout_spin.setRange(30, 600)
-        self.stall_timeout_spin.setSingleStep(30)
+        self.stall_timeout_spin.setRange(10, 600)
+        self.stall_timeout_spin.setSingleStep(10)
         self.stall_timeout_spin.setValue(120)
         self.stall_timeout_spin.setToolTip("超过该秒数无进度则视为卡住（默认 120 秒）")
+        retry_wait_label = QLabel("重试等待(秒):")
+        self.retry_wait_spin = QSpinBox()
+        self.retry_wait_spin.setRange(0, 600)
+        self.retry_wait_spin.setSingleStep(1)
+        self.retry_wait_spin.setValue(5)
+        self.retry_wait_spin.setToolTip(
+            "失败自动重试 / 卡住重启后，等待多少秒再继续下载。\n"
+            "0 表示几乎立即重试；若配置了卡住关联命令，可适当加大以便代理内核恢复。"
+        )
         retry_layout.addWidget(self.auto_retry_checkbox)
         retry_layout.addWidget(self.stall_restart_checkbox)
         retry_layout.addWidget(stall_timeout_label)
         retry_layout.addWidget(self.stall_timeout_spin)
+        retry_layout.addWidget(retry_wait_label)
+        retry_layout.addWidget(self.retry_wait_spin)
         retry_layout.addStretch()
         layout.addLayout(retry_layout)
 
@@ -543,7 +554,10 @@ class MainWindow(QMainWindow):
         self.auto_retry_checkbox.setChecked(bool(data.get("auto_retry", True)))
         self.stall_restart_checkbox.setChecked(bool(data.get("stall_restart", True)))
         stall_sec = int(data.get("stall_timeout_sec") or 120)
-        self.stall_timeout_spin.setValue(max(30, min(600, stall_sec)))
+        self.stall_timeout_spin.setValue(max(10, min(600, stall_sec)))
+        raw_wait = data.get("retry_wait_sec")
+        retry_wait = 5 if raw_wait is None else int(raw_wait)
+        self.retry_wait_spin.setValue(max(0, min(600, retry_wait)))
         self.stall_cmd_input.setText(str(data.get("stall_restart_command") or ""))
         self._on_stall_restart_toggled(self.stall_restart_checkbox.isChecked())
         self.hub_workers_spin.setValue(
@@ -628,6 +642,7 @@ class MainWindow(QMainWindow):
             proxy=self.proxy_input.text().strip(),
             proxy_enabled=self.proxy_enabled.isChecked(),
             auto_retry=self.auto_retry_checkbox.isChecked(),
+            retry_wait_sec=self.retry_wait_spin.value(),
             download_backend=self._current_backend(),
             stall_restart=self.stall_restart_checkbox.isChecked(),
             stall_timeout_sec=self.stall_timeout_spin.value(),
@@ -925,10 +940,13 @@ class MainWindow(QMainWindow):
         if path:
             self.path_input.setText(path)
 
-    @staticmethod
-    def _retry_delay_seconds(attempt: int) -> int:
-        """Exponential backoff: 3s, 6s, 12s, 24s, 48s, then cap at 60s."""
-        return min(60, 3 * (2 ** min(max(attempt, 1) - 1, 4)))
+    def _retry_delay_seconds(self, attempt: int = 1) -> int:
+        """Seconds to wait before auto-retry / stall restart (user-configured)."""
+        try:
+            wait = int(self.retry_wait_spin.value())
+        except Exception:
+            wait = 5
+        return max(0, min(600, wait))
 
     def _set_downloading_ui(self, active: bool):
         self.download_button.setEnabled(not active)
@@ -1270,27 +1288,30 @@ class MainWindow(QMainWindow):
         self._pending_stall_restart = False
         self.download_worker = None
         self._schedule_stall_or_error_restart(
-            "因卡住无进度已中断，准备重新开始（断点续传）",
-            from_stall=True,
+            "因卡住无进度已中断，准备重新开始（断点续传）"
         )
 
-    def _schedule_stall_or_error_restart(
-        self, reason: str, *, from_stall: bool = False
-    ) -> None:
-        """Shared path for stall restart (and reuses retry delay)."""
+    def _schedule_stall_or_error_restart(self, reason: str) -> None:
+        """Shared path for stall / error restart (delay from user setting)."""
         self._stall_watch_timer.stop()
         self._retry_attempt += 1
         delay = self._retry_delay_seconds(self._retry_attempt)
-        # Give proxy restart a little more room when a hook command is configured.
-        if from_stall and self.stall_cmd_input.text().strip():
-            delay = max(delay, 15)
         self._set_downloading_ui(True)
         self.update_status(reason, error=True)
-        self.update_status(
-            f"将在 {delay} 秒后自动重新开始（第 {self._retry_attempt} 次，断点续传）。"
-            "点「停止」可取消。"
-        )
-        self._retry_timer.start(delay * 1000)
+        if delay <= 0:
+            self.update_status(
+                f"立即自动重新开始（第 {self._retry_attempt} 次，断点续传）。"
+                "点「停止」可取消。"
+            )
+            # Tiny delay so cancel/cleanup can finish before restart.
+            self._retry_timer.start(200)
+        else:
+            self.update_status(
+                f"将在 {delay} 秒后自动重新开始"
+                f"（第 {self._retry_attempt} 次，断点续传）。"
+                "点「停止」可取消。"
+            )
+            self._retry_timer.start(delay * 1000)
 
     def update_status(self, message, error=False):
         # Worker status counts as activity (unless it's our own stall notice).
@@ -1353,10 +1374,7 @@ class MainWindow(QMainWindow):
         # Stall watchdog forced a cancel → restart, not user stop.
         if self._pending_stall_restart and not self._user_stopped:
             self._pending_stall_restart = False
-            self._schedule_stall_or_error_restart(
-                f"因卡住无进度已中断：{error_msg}",
-                from_stall=True,
-            )
+            self._schedule_stall_or_error_restart(f"因卡住无进度已中断：{error_msg}")
             return
 
         if is_cancel:
