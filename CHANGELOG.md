@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.16.0 (2026-07-29)
+
+### Features
+
+- Make auto-retry wait seconds user-configurable
+  ([`d0c7b22`](https://github.com/guozhijian611/hf-model-downloader/commit/d0c7b224fec8141347be62e306be7ae170334304))
+
+
 ## v0.15.0 (2026-07-29)
 
 ### Features
