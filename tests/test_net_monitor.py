@@ -54,8 +54,8 @@ def test_monitor_tick_and_history():
     m.tick()
     assert m.last is not None
     assert len(m.history) >= 1
-    ts, down, up = m.history_series()
-    assert len(ts) == len(down) == len(up)
+    ts, down, up, disk_w = m.history_series()
+    assert len(ts) == len(down) == len(up) == len(disk_w)
     m.reset_session()
     assert m.session.total_down == 0
     assert len(m.history) == 0

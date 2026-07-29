@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import shutil
 import time
 from collections import deque
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import psutil
 
@@ -84,13 +86,17 @@ def list_network_interfaces() -> list[str]:
 
 @dataclass
 class NetSnapshot:
-    """One sample of interface traffic."""
+    """One sample of interface + disk traffic."""
 
     timestamp: float
     down_bps: float = 0.0
     up_bps: float = 0.0
+    disk_write_bps: float = 0.0
+    disk_read_bps: float = 0.0
     bytes_recv: int = 0
     bytes_sent: int = 0
+    disk_write_bytes: int = 0
+    disk_read_bytes: int = 0
 
 
 @dataclass
@@ -100,11 +106,14 @@ class SessionStats:
     started_at: float = field(default_factory=time.time)
     total_down: int = 0
     total_up: int = 0
+    total_disk_write: int = 0
     peak_down_bps: float = 0.0
     peak_up_bps: float = 0.0
+    peak_disk_write_bps: float = 0.0
     sample_count: int = 0
     sum_down_bps: float = 0.0
     sum_up_bps: float = 0.0
+    sum_disk_write_bps: float = 0.0
 
     @property
     def elapsed(self) -> float:
@@ -123,6 +132,12 @@ class SessionStats:
         return self.sum_up_bps / self.sample_count
 
     @property
+    def avg_disk_write_bps(self) -> float:
+        if self.sample_count <= 0:
+            return 0.0
+        return self.sum_disk_write_bps / self.sample_count
+
+    @property
     def overall_avg_down_bps(self) -> float:
         """Total downloaded / wall-clock elapsed (session average)."""
         elapsed = self.elapsed
@@ -136,6 +151,13 @@ class SessionStats:
         if elapsed <= 0:
             return 0.0
         return self.total_up / elapsed
+
+    @property
+    def overall_avg_disk_write_bps(self) -> float:
+        elapsed = self.elapsed
+        if elapsed <= 0:
+            return 0.0
+        return self.total_disk_write / elapsed
 
 
 class NetworkTrafficMonitor:
@@ -156,9 +178,14 @@ class NetworkTrafficMonitor:
         self.session = SessionStats()
         self._prev_recv: int | None = None
         self._prev_sent: int | None = None
+        self._prev_disk_w: int | None = None
+        self._prev_disk_r: int | None = None
         self._prev_t: float | None = None
         self._paused = False
         self.last: NetSnapshot | None = None
+        self.watch_path: str | None = None
+        self.disk_free_bytes: int | None = None
+        self.disk_total_bytes: int | None = None
 
     def set_interface(self, name: str | None) -> None:
         """Switch NIC; resets rate baseline (not session totals)."""
@@ -166,9 +193,12 @@ class NetworkTrafficMonitor:
         if iface == self.interface:
             return
         self.interface = iface
-        self._prev_recv = None
-        self._prev_sent = None
-        self._prev_t = None
+        self._reset_baseline()
+
+    def set_watch_path(self, path: str | None) -> None:
+        """Path used for free-space display (usually download save dir)."""
+        self.watch_path = (path or "").strip() or None
+        self._refresh_disk_space()
 
     def set_history_seconds(self, seconds: int) -> None:
         seconds = max(30, int(seconds))
@@ -183,18 +213,22 @@ class NetworkTrafficMonitor:
         """Clear totals / peaks / chart history and re-baseline counters."""
         self.session = SessionStats()
         self.history.clear()
-        self._prev_recv = None
-        self._prev_sent = None
-        self._prev_t = None
+        self._reset_baseline()
         self.last = None
+        self._refresh_disk_space()
 
     def set_paused(self, paused: bool) -> None:
         self._paused = bool(paused)
         if self._paused:
             # Drop baseline so next resume doesn't invent a huge spike.
-            self._prev_recv = None
-            self._prev_sent = None
-            self._prev_t = None
+            self._reset_baseline()
+
+    def _reset_baseline(self) -> None:
+        self._prev_recv = None
+        self._prev_sent = None
+        self._prev_disk_w = None
+        self._prev_disk_r = None
+        self._prev_t = None
 
     @property
     def paused(self) -> bool:
@@ -225,6 +259,36 @@ class NetworkTrafficMonitor:
             return 0, 0
         return int(total.bytes_recv), int(total.bytes_sent)
 
+    def _read_disk_counters(self) -> tuple[int, int]:
+        """System-wide disk bytes written/read (all disks)."""
+        try:
+            c = psutil.disk_io_counters()
+        except Exception:
+            return 0, 0
+        if c is None:
+            return 0, 0
+        return int(getattr(c, "write_bytes", 0) or 0), int(
+            getattr(c, "read_bytes", 0) or 0
+        )
+
+    def _refresh_disk_space(self) -> None:
+        path = self.watch_path
+        if not path:
+            self.disk_free_bytes = None
+            self.disk_total_bytes = None
+            return
+        try:
+            p = Path(path)
+            # Use existing parent if path not created yet
+            while p and not p.exists() and p != p.parent:
+                p = p.parent
+            usage = shutil.disk_usage(str(p if p.exists() else path))
+            self.disk_free_bytes = int(usage.free)
+            self.disk_total_bytes = int(usage.total)
+        except Exception:
+            self.disk_free_bytes = None
+            self.disk_total_bytes = None
+
     def tick(self) -> NetSnapshot:
         """Take one sample. Safe to call from UI timer."""
         now = time.time()
@@ -236,50 +300,80 @@ class NetworkTrafficMonitor:
             recv, sent = self._read_counters()
         except Exception:
             recv, sent = self._prev_recv or 0, self._prev_sent or 0
+        try:
+            disk_w, disk_r = self._read_disk_counters()
+        except Exception:
+            disk_w = self._prev_disk_w or 0
+            disk_r = self._prev_disk_r or 0
 
-        down_bps = up_bps = 0.0
+        down_bps = up_bps = disk_w_bps = disk_r_bps = 0.0
         if self._prev_recv is not None and self._prev_t is not None:
             dt = max(1e-6, now - self._prev_t)
             d_recv = recv - self._prev_recv
             d_sent = sent - self._prev_sent
+            d_dw = disk_w - (self._prev_disk_w or disk_w)
+            d_dr = disk_r - (self._prev_disk_r or disk_r)
             # Counter wrap / NIC reset
             if d_recv < 0:
                 d_recv = 0
             if d_sent < 0:
                 d_sent = 0
+            if d_dw < 0:
+                d_dw = 0
+            if d_dr < 0:
+                d_dr = 0
             down_bps = d_recv / dt
             up_bps = d_sent / dt
+            disk_w_bps = d_dw / dt
+            disk_r_bps = d_dr / dt
             self.session.total_down += d_recv
             self.session.total_up += d_sent
+            self.session.total_disk_write += d_dw
             self.session.sample_count += 1
             self.session.sum_down_bps += down_bps
             self.session.sum_up_bps += up_bps
+            self.session.sum_disk_write_bps += disk_w_bps
             if down_bps > self.session.peak_down_bps:
                 self.session.peak_down_bps = down_bps
             if up_bps > self.session.peak_up_bps:
                 self.session.peak_up_bps = up_bps
+            if disk_w_bps > self.session.peak_disk_write_bps:
+                self.session.peak_disk_write_bps = disk_w_bps
 
         self._prev_recv = recv
         self._prev_sent = sent
+        self._prev_disk_w = disk_w
+        self._prev_disk_r = disk_r
         self._prev_t = now
+
+        # Refresh free space every ~5 samples to keep cost low
+        if self.session.sample_count % 5 == 0:
+            self._refresh_disk_space()
 
         snap = NetSnapshot(
             timestamp=now,
             down_bps=down_bps,
             up_bps=up_bps,
+            disk_write_bps=disk_w_bps,
+            disk_read_bps=disk_r_bps,
             bytes_recv=recv,
             bytes_sent=sent,
+            disk_write_bytes=disk_w,
+            disk_read_bytes=disk_r,
         )
         self.history.append(snap)
         self.last = snap
         return snap
 
-    def history_series(self) -> tuple[list[float], list[float], list[float]]:
-        """Return (timestamps_rel_sec, down_bps, up_bps) for charting."""
+    def history_series(
+        self,
+    ) -> tuple[list[float], list[float], list[float], list[float]]:
+        """Return (t_rel, down_bps, up_bps, disk_write_bps) for charting."""
         if not self.history:
-            return [], [], []
+            return [], [], [], []
         t0 = self.history[0].timestamp
         ts = [s.timestamp - t0 for s in self.history]
         down = [s.down_bps for s in self.history]
         up = [s.up_bps for s in self.history]
-        return ts, down, up
+        disk_w = [s.disk_write_bps for s in self.history]
+        return ts, down, up, disk_w

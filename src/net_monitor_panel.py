@@ -26,20 +26,30 @@ from .net_monitor import (
 
 
 class SpeedChartWidget(QWidget):
-    """Lightweight dual-series line chart (download / upload)."""
+    """Lightweight line chart: download / upload / disk write."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._down: list[float] = []
         self._up: list[float] = []
+        self._disk_w: list[float] = []
         self.setMinimumHeight(120)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setFixedHeight(140)
-        self.setToolTip("绿色 = 下载速度，橙色 = 上传速度")
+        self.setFixedHeight(150)
+        self.setToolTip(
+            "绿色 = 下载速度，橙色 = 上传速度，蓝色 = 磁盘写入速度\n"
+            "若下载远高于磁盘写入，可能先吃内存缓存再掉速"
+        )
 
-    def set_series(self, down: list[float], up: list[float]) -> None:
+    def set_series(
+        self,
+        down: list[float],
+        up: list[float],
+        disk_w: list[float] | None = None,
+    ) -> None:
         self._down = list(down)
         self._up = list(up)
+        self._disk_w = list(disk_w or [])
         self.update()
 
     def paintEvent(self, _event) -> None:  # noqa: N802
@@ -56,15 +66,13 @@ class SpeedChartWidget(QWidget):
         painter.fillRect(0, 0, w, h, QColor("#1e1e1e"))
         painter.fillRect(plot_x, plot_y, plot_w, plot_h, QColor("#252526"))
 
-        series = self._down or self._up
-        n = max(len(self._down), len(self._up), 1)
+        series = self._down or self._up or self._disk_w
+        n = max(len(self._down), len(self._up), len(self._disk_w), 1)
         max_v = 0.0
-        for v in self._down:
-            if v > max_v:
-                max_v = v
-        for v in self._up:
-            if v > max_v:
-                max_v = v
+        for values in (self._down, self._up, self._disk_w):
+            for v in values:
+                if v > max_v:
+                    max_v = v
         if max_v <= 0:
             max_v = 1024.0  # 1 KB/s floor so empty chart isn't flat weird scale
         # Headroom
@@ -94,7 +102,7 @@ class SpeedChartWidget(QWidget):
         painter.setPen(QPen(QColor("#555"), 1))
         painter.drawRect(plot_x, plot_y, plot_w, plot_h)
 
-        def draw_line(values: list[float], color: QColor) -> None:
+        def draw_line(values: list[float], color: QColor, width: int = 2) -> None:
             if len(values) < 2:
                 return
             path = QPainterPath()
@@ -105,17 +113,20 @@ class SpeedChartWidget(QWidget):
                     path.moveTo(QPointF(x, y))
                 else:
                     path.lineTo(QPointF(x, y))
-            painter.setPen(QPen(color, 2))
+            painter.setPen(QPen(color, width))
             painter.drawPath(path)
 
         draw_line(self._down, QColor("#4caf50"))
         draw_line(self._up, QColor("#ff9800"))
+        draw_line(self._disk_w, QColor("#42a5f5"), width=2)
 
         # Legend
         painter.setPen(QColor("#4caf50"))
         painter.drawText(plot_x + 6, plot_y + 14, "↓ 下载")
         painter.setPen(QColor("#ff9800"))
         painter.drawText(plot_x + 64, plot_y + 14, "↑ 上传")
+        painter.setPen(QColor("#42a5f5"))
+        painter.drawText(plot_x + 122, plot_y + 14, "磁盘写")
 
         # X axis hint
         painter.setPen(QColor("#9e9e9e"))
@@ -226,14 +237,16 @@ class NetMonitorPanel(QFrame):
 
         self._lbl_live_down_t, self.lbl_live_down = _metric_label("实时下载")
         self._lbl_live_up_t, self.lbl_live_up = _metric_label("实时上传")
+        self._lbl_disk_w_t, self.lbl_disk_w = _metric_label("磁盘写入")
+        self._lbl_disk_r_t, self.lbl_disk_r = _metric_label("磁盘读取")
         self._lbl_peak_down_t, self.lbl_peak_down = _metric_label("峰值下载")
-        self._lbl_peak_up_t, self.lbl_peak_up = _metric_label("峰值上传")
+        self._lbl_peak_disk_t, self.lbl_peak_disk = _metric_label("峰值磁盘写")
         self._lbl_total_down_t, self.lbl_total_down = _metric_label("会话总下载")
-        self._lbl_total_up_t, self.lbl_total_up = _metric_label("会话总上传")
+        self._lbl_total_disk_t, self.lbl_total_disk = _metric_label("会话总写入")
         self._lbl_avg_down_t, self.lbl_avg_down = _metric_label("平均下载")
-        self._lbl_avg_up_t, self.lbl_avg_up = _metric_label("平均上传")
+        self._lbl_avg_disk_t, self.lbl_avg_disk = _metric_label("平均磁盘写")
         self._lbl_elapsed_t, self.lbl_elapsed = _metric_label("会话时长")
-        self._lbl_samples_t, self.lbl_samples = _metric_label("采样点数")
+        self._lbl_free_t, self.lbl_free = _metric_label("磁盘剩余")
 
         rows = [
             (
@@ -243,28 +256,34 @@ class NetMonitorPanel(QFrame):
                 self.lbl_live_up,
             ),
             (
+                self._lbl_disk_w_t,
+                self.lbl_disk_w,
+                self._lbl_disk_r_t,
+                self.lbl_disk_r,
+            ),
+            (
                 self._lbl_peak_down_t,
                 self.lbl_peak_down,
-                self._lbl_peak_up_t,
-                self.lbl_peak_up,
+                self._lbl_peak_disk_t,
+                self.lbl_peak_disk,
             ),
             (
                 self._lbl_total_down_t,
                 self.lbl_total_down,
-                self._lbl_total_up_t,
-                self.lbl_total_up,
+                self._lbl_total_disk_t,
+                self.lbl_total_disk,
             ),
             (
                 self._lbl_avg_down_t,
                 self.lbl_avg_down,
-                self._lbl_avg_up_t,
-                self.lbl_avg_up,
+                self._lbl_avg_disk_t,
+                self.lbl_avg_disk,
             ),
             (
                 self._lbl_elapsed_t,
                 self.lbl_elapsed,
-                self._lbl_samples_t,
-                self.lbl_samples,
+                self._lbl_free_t,
+                self.lbl_free,
             ),
         ]
         for r, (t1, v1, t2, v2) in enumerate(rows):
@@ -279,8 +298,19 @@ class NetMonitorPanel(QFrame):
         self.lbl_live_up.setStyleSheet(
             "font-weight: bold; font-size: 14px; color: #ef6c00;"
         )
+        self.lbl_disk_w.setStyleSheet(
+            "font-weight: bold; font-size: 14px; color: #1565c0;"
+        )
 
         body_layout.addLayout(metrics)
+
+        self.hint_label = QLabel(
+            "提示：对比「实时下载」与「磁盘写入」。若下载持续高于写入，"
+            "数据会先堆在内存，稍后写入跟不上就会掉速。"
+        )
+        self.hint_label.setWordWrap(True)
+        self.hint_label.setStyleSheet("color: #777; font-size: 11px;")
+        body_layout.addWidget(self.hint_label)
         root.addWidget(self.body)
 
         # First sample quickly so UI isn't empty
@@ -326,6 +356,16 @@ class NetMonitorPanel(QFrame):
     def stop(self) -> None:
         self._timer.stop()
 
+    def set_watch_path(self, path: str | None) -> None:
+        """Bind free-space display to download save path."""
+        self._monitor.set_watch_path(path)
+
+    def mark_download_session(self) -> None:
+        """Optional: reset chart totals when a new download starts."""
+        self._monitor.reset_session()
+        self.chart.set_series([], [], [])
+        self._update_labels()
+
     # ----- internals -----
 
     def _refill_ifaces(self) -> None:
@@ -359,13 +399,13 @@ class NetMonitorPanel(QFrame):
 
     def _on_reset(self) -> None:
         self._monitor.reset_session()
-        self.chart.set_series([], [])
+        self.chart.set_series([], [], [])
         self._update_labels()
 
     def _on_tick(self) -> None:
         self._monitor.tick()
-        _, down, up = self._monitor.history_series()
-        self.chart.set_series(down, up)
+        _, down, up, disk_w = self._monitor.history_series()
+        self.chart.set_series(down, up, disk_w)
         self._update_labels()
 
     def _update_labels(self) -> None:
@@ -376,12 +416,19 @@ class NetMonitorPanel(QFrame):
             return
         self.lbl_live_down.setText(format_rate(last.down_bps))
         self.lbl_live_up.setText(format_rate(last.up_bps))
+        self.lbl_disk_w.setText(format_rate(last.disk_write_bps))
+        self.lbl_disk_r.setText(format_rate(last.disk_read_bps))
         self.lbl_peak_down.setText(format_rate(s.peak_down_bps))
-        self.lbl_peak_up.setText(format_rate(s.peak_up_bps))
+        self.lbl_peak_disk.setText(format_rate(s.peak_disk_write_bps))
         self.lbl_total_down.setText(format_bytes(s.total_down))
-        self.lbl_total_up.setText(format_bytes(s.total_up))
-        # Wall-clock average is more intuitive for "平均流量"
+        self.lbl_total_disk.setText(format_bytes(s.total_disk_write))
         self.lbl_avg_down.setText(format_rate(s.overall_avg_down_bps))
-        self.lbl_avg_up.setText(format_rate(s.overall_avg_up_bps))
+        self.lbl_avg_disk.setText(format_rate(s.overall_avg_disk_write_bps))
         self.lbl_elapsed.setText(format_duration(s.elapsed))
-        self.lbl_samples.setText(str(s.sample_count))
+        if m.disk_free_bytes is not None and m.disk_total_bytes:
+            free_pct = 100.0 * m.disk_free_bytes / max(1, m.disk_total_bytes)
+            self.lbl_free.setText(
+                f"{format_bytes(m.disk_free_bytes)} ({free_pct:.0f}%)"
+            )
+        else:
+            self.lbl_free.setText("—")

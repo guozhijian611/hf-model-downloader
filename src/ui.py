@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
 
 from .app_logging import get_last_crash_log_path, get_log_dir, get_runtime_log_path
 from .app_settings import load_form_settings, save_form_settings
+from .download_progress_panel import DownloadProgressPanel
 from .endpoints import (
     build_endpoint_chain,
     default_endpoint,
@@ -428,6 +429,10 @@ class MainWindow(QMainWindow):
         self.net_monitor_panel.prefs_changed.connect(self._save_settings)
         layout.addWidget(self.net_monitor_panel)
 
+        self.file_progress_panel = DownloadProgressPanel()
+        self.file_progress_panel.prefs_changed.connect(self._save_settings)
+        layout.addWidget(self.file_progress_panel)
+
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setMinimumHeight(100)
@@ -590,6 +595,9 @@ class MainWindow(QMainWindow):
         self.net_monitor_panel.set_expanded(
             bool(data.get("net_monitor_expanded", True))
         )
+        self.file_progress_panel.set_expanded(
+            bool(data.get("file_progress_expanded", True))
+        )
 
     def _platform_key(self) -> str:
         return (
@@ -669,6 +677,7 @@ class MainWindow(QMainWindow):
             net_monitor_expanded=self.net_monitor_panel.is_expanded(),
             net_monitor_iface=self.net_monitor_panel.selected_interface(),
             net_monitor_history_sec=self.net_monitor_panel.history_seconds(),
+            file_progress_expanded=self.file_progress_panel.is_expanded(),
         )
 
     def closeEvent(self, event):
@@ -679,6 +688,10 @@ class MainWindow(QMainWindow):
         self._stall_watch_timer.stop()
         try:
             self.net_monitor_panel.stop()
+        except Exception:
+            pass
+        try:
+            self.file_progress_panel.reset()
         except Exception:
             pass
         if self._update_worker and self._update_worker.isRunning():
@@ -1076,6 +1089,18 @@ class MainWindow(QMainWindow):
         if self.stall_restart_checkbox.isChecked():
             self._stall_watch_timer.start()
 
+        # Bind disk free-space + refresh file progress on each job start
+        try:
+            self.net_monitor_panel.set_watch_path(params.get("save_path"))
+        except Exception:
+            pass
+        if clear_log:
+            try:
+                self.file_progress_panel.reset()
+                self.net_monitor_panel.mark_download_session()
+            except Exception:
+                pass
+
         if clear_log:
             self.log_text.clear()
             self.update_status("正在初始化下载...")
@@ -1350,9 +1375,14 @@ class MainWindow(QMainWindow):
         )
 
     def update_log(self, message):
+        text = str(message)
         if self.download_worker and self.download_worker.isRunning():
-            self._touch_download_activity(str(message))
-        self.log_text.append(message)
+            self._touch_download_activity(text)
+        try:
+            self.file_progress_panel.feed_log(text)
+        except Exception:
+            pass
+        self.log_text.append(text)
         self.log_text.verticalScrollBar().setValue(
             self.log_text.verticalScrollBar().maximum()
         )
