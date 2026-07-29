@@ -17,7 +17,12 @@ from pathlib import Path
 import requests
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from .proxy_env import normalize_proxy, proxies_dict
+from .proxy_env import (
+    is_socks_proxy,
+    normalize_proxy,
+    proxies_dict,
+    socks_support_available,
+)
 from .version import get_app_version, is_remote_newer, normalize_version
 
 logger = logging.getLogger(__name__)
@@ -127,13 +132,31 @@ def check_for_update(
         "User-Agent": f"hf-model-downloader/{current}",
     }
 
-    try:
-        response = requests.get(
-            LATEST_RELEASE_API,
-            headers=headers,
-            timeout=timeout,
-            proxies=proxies_dict(proxy),
+    # Avoid inheriting broken system SOCKS env when app proxy is off.
+    # When an explicit proxy is set, pass it; otherwise disable env trust unless
+    # we only want direct GitHub access from the app.
+    req_kwargs: dict = {
+        "headers": headers,
+        "timeout": timeout,
+        "proxies": proxies_dict(proxy),
+        "trust_env": bool(proxy),
+    }
+    if proxy and is_socks_proxy(proxy) and not socks_support_available():
+        return UpdateCheckResult(
+            current_version=current,
+            latest_version=None,
+            release_url=RELEASES_PAGE_URL,
+            release_name=None,
+            update_available=False,
+            message=(
+                "检查更新失败：缺少 SOCKS 依赖（PySocks）。"
+                "请安装含 PySocks 的新版本，或改用 http:// 代理。"
+            ),
+            error="missing_socks",
         )
+
+    try:
+        response = requests.get(LATEST_RELEASE_API, **req_kwargs)
         if response.status_code == 404:
             return UpdateCheckResult(
                 current_version=current,
@@ -158,13 +181,20 @@ def check_for_update(
             error="timeout",
         )
     except requests.RequestException as exc:
+        err = str(exc)
+        if "SOCKS" in err.upper() or "socks" in err.lower():
+            err = (
+                f"{err}\n"
+                "提示：使用 socks5 代理需要 PySocks。"
+                "请更新到最新安装包，或改用 http://127.0.0.1:端口 形式代理。"
+            )
         return UpdateCheckResult(
             current_version=current,
             latest_version=None,
             release_url=RELEASES_PAGE_URL,
             release_name=None,
             update_available=False,
-            message=f"检查更新失败：{exc}",
+            message=f"检查更新失败：{err}",
             error=str(exc),
         )
     except ValueError as exc:
@@ -300,6 +330,7 @@ def download_file(
         stream=True,
         timeout=timeout,
         proxies=proxies_dict(proxy),
+        trust_env=bool(proxy),
     ) as response:
         response.raise_for_status()
         total = int(response.headers.get("Content-Length") or 0)

@@ -1,4 +1,4 @@
-"""HTTP(S) proxy helpers for downloads."""
+"""HTTP(S)/SOCKS proxy helpers for downloads."""
 
 from __future__ import annotations
 
@@ -18,6 +18,24 @@ _PROXY_ENV_KEYS = (
 def normalize_proxy(proxy: str | None) -> str | None:
     proxy = (proxy or "").strip()
     return proxy or None
+
+
+def is_socks_proxy(proxy: str | None) -> bool:
+    proxy = (proxy or "").lower()
+    return (
+        proxy.startswith("socks5://")
+        or proxy.startswith("socks4://")
+        or proxy.startswith("socks://")
+    )
+
+
+def socks_support_available() -> bool:
+    try:
+        import socks  # noqa: F401  # from PySocks
+
+        return True
+    except Exception:
+        return False
 
 
 def proxies_dict(proxy: str | None) -> dict[str, str] | None:
