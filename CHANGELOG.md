@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.14.0 (2026-07-29)
+
+### Features
+
+- Expose hub and hfd concurrency settings in the UI
+  ([`51c7d7f`](https://github.com/guozhijian611/hf-model-downloader/commit/51c7d7f729da57e758776f222d92a1d52d69d339))
+
+
 ## v0.13.1 (2026-07-29)
 
 ### Chores
