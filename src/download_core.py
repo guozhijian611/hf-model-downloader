@@ -13,6 +13,10 @@ import multiprocessing
 import os
 import signal
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from fnmatch import fnmatch
 
 from tqdm.auto import tqdm
 
@@ -75,6 +79,92 @@ class UnifiedProgressBar(tqdm):
     def update(self, n):
         super().update(n)
         self._current += n
+
+
+# Pipe-backed per-file tqdm used by parallel hf_hub_download.
+# snapshot_download intentionally swallows per-file bars into one aggregate bar
+# ("Downloading (incomplete total...)"), which looks like a single-thread hang.
+_PIPE_TQDM_LOCK = threading.Lock()
+_PIPE_TQDM_LAST: dict[str, float] = {}
+_PIPE_TQDM_PIPE = None
+_PIPE_TQDM_STATS_LOCK = threading.Lock()
+_PIPE_TQDM_ACTIVE: dict[str, tuple[int, int]] = {}  # name -> (n, total)
+
+
+def _pipe_tqdm_reset(pipe) -> None:
+    global _PIPE_TQDM_PIPE
+    with _PIPE_TQDM_LOCK:
+        _PIPE_TQDM_PIPE = pipe
+        _PIPE_TQDM_LAST.clear()
+    with _PIPE_TQDM_STATS_LOCK:
+        _PIPE_TQDM_ACTIVE.clear()
+
+
+class PipeFileTqdm(tqdm):
+    """tqdm that reports structured per-file progress over the download pipe."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs = dict(kwargs)
+        self._fname = str(kwargs.get("desc") or "file")
+        # Never write multi-bar noise to stdout (pipe captures stdout too).
+        kwargs["disable"] = True
+        kwargs["mininterval"] = 0.5
+        super().__init__(*args, **kwargs)
+        self._last_human = 0.0
+        self._emit(force=True)
+
+    def update(self, n=1):
+        r = super().update(n)
+        self._emit()
+        return r
+
+    def close(self):
+        try:
+            self._emit(force=True, final=True)
+        finally:
+            super().close()
+
+    def _emit(self, force: bool = False, final: bool = False) -> None:
+        pipe = _PIPE_TQDM_PIPE
+        if not pipe:
+            return
+        now = time.monotonic()
+        name = self._fname
+        n = int(self.n or 0)
+        total = int(self.total or 0)
+        with _PIPE_TQDM_LOCK:
+            last = _PIPE_TQDM_LAST.get(name, 0.0)
+            if not force and (now - last) < 0.5:
+                return
+            _PIPE_TQDM_LAST[name] = now
+        status = "done" if final or (total > 0 and n >= total) else "downloading"
+        try:
+            pipe.send(f"[HF_FILE]\t{name}\t{n}\t{total}\t{status}")
+        except Exception:
+            return
+        with _PIPE_TQDM_STATS_LOCK:
+            if status == "done":
+                _PIPE_TQDM_ACTIVE.pop(name, None)
+            else:
+                _PIPE_TQDM_ACTIVE[name] = (n, total)
+            active = len(_PIPE_TQDM_ACTIVE)
+        # Human log: throttle harder to avoid flooding the main log panel
+        if force or final or (now - self._last_human) >= 2.0:
+            self._last_human = now
+            try:
+                if total > 0:
+                    pct = 100.0 * n / total
+                    size_txt = f"{n}/{total}"
+                else:
+                    pct = 0.0
+                    size_txt = str(n)
+                short = name if len(name) <= 48 else ("…" + name[-47:])
+                pipe.send(
+                    f"文件 [{active}并发] {short}: {pct:.1f}% ({size_txt})"
+                    + (" ✓" if status == "done" else "")
+                )
+            except Exception:
+                pass
 
 
 class SafePipeWriter:
@@ -232,25 +322,151 @@ def download_huggingface(
         ]
 
     try:
-        # Do NOT pass proxies= — ignored on hub>=1.x and emits UserWarning.
-        result = snapshot_download(
-            repo_id=model_id,
-            repo_type=repo_type,
-            local_dir=repo_dir,
+        # Prefer parallel hf_hub_download so each concurrent file reports progress.
+        # snapshot_download merges all bars into "incomplete total" only — looks stuck.
+        result = _download_hf_parallel_with_file_progress(
+            model_id=model_id,
+            repo_dir=repo_dir,
             token=token,
-            force_download=False,
-            max_workers=max_workers,
-            tqdm_class=UnifiedProgressBar,
-            ignore_patterns=ignore_patterns,
-            local_files_only=False,
-            etag_timeout=60,
             endpoint=resolved_endpoint,
+            repo_type=repo_type,
+            max_workers=max_workers,
+            ignore_patterns=ignore_patterns,
+            pipe=pipe,
         )
     except Exception as exc:
-        _abort_download(pipe, _hf_friendly_error(exc, resolved_endpoint))
+        if pipe:
+            pipe.send(f"并行分文件下载失败，回退 snapshot_download：{exc}")
+        try:
+            # Fallback: official snapshot (aggregate progress only).
+            result = snapshot_download(
+                repo_id=model_id,
+                repo_type=repo_type,
+                local_dir=repo_dir,
+                token=token,
+                force_download=False,
+                max_workers=max_workers,
+                tqdm_class=UnifiedProgressBar,
+                ignore_patterns=ignore_patterns,
+                local_files_only=False,
+                etag_timeout=60,
+                endpoint=resolved_endpoint,
+            )
+        except Exception as exc2:
+            _abort_download(pipe, _hf_friendly_error(exc2, resolved_endpoint))
 
     if pipe:
         pipe.send(f"Hugging Face 下载完成：{result}")
+
+
+def _match_ignore(path: str, ignore_patterns: list[str]) -> bool:
+    """True if path should be ignored (fnmatch on full path and basename)."""
+    base = path.rsplit("/", 1)[-1]
+    for pat in ignore_patterns or []:
+        if fnmatch(path, pat) or fnmatch(base, pat):
+            return True
+        # patterns like ".*" for hidden
+        if pat.startswith("*.") and base.endswith(pat[1:]):
+            return True
+    return False
+
+
+def _download_hf_parallel_with_file_progress(
+    *,
+    model_id: str,
+    repo_dir: str,
+    token: str | None,
+    endpoint: str,
+    repo_type: str,
+    max_workers: int,
+    ignore_patterns: list[str],
+    pipe=None,
+) -> str:
+    """List repo files and download with ThreadPoolExecutor + per-file progress."""
+    from huggingface_hub import HfApi, hf_hub_download
+
+    api = HfApi(endpoint=endpoint, token=token)
+    if pipe:
+        pipe.send("正在列出仓库文件（用于分文件并发进度）…")
+    try:
+        all_files = api.list_repo_files(
+            repo_id=model_id, repo_type=repo_type, token=token
+        )
+    except TypeError:
+        all_files = api.list_repo_files(repo_id=model_id, repo_type=repo_type)
+
+    files = [f for f in all_files if not _match_ignore(f, ignore_patterns)]
+    if pipe:
+        pipe.send(
+            f"共 {len(files)} 个文件待下载（已过滤 ignore），"
+            f"并发 max_workers={max_workers}"
+        )
+        pipe.send(
+            "说明：官方 snapshot_download 只显示合并总进度；"
+            "本模式为每个并发文件单独上报进度。"
+        )
+        pipe.send(f"[HF_META]\tfiles\t{len(files)}")
+
+    if not files:
+        os.makedirs(repo_dir, exist_ok=True)
+        return repo_dir
+
+    _pipe_tqdm_reset(pipe)
+    os.makedirs(repo_dir, exist_ok=True)
+
+    errors: list[str] = []
+    errors_lock = threading.Lock()
+    completed = 0
+    completed_lock = threading.Lock()
+
+    def _one(filename: str) -> str:
+        nonlocal completed
+        path = hf_hub_download(
+            repo_id=model_id,
+            filename=filename,
+            repo_type=repo_type,
+            revision=None,
+            endpoint=endpoint,
+            local_dir=repo_dir,
+            token=token,
+            force_download=False,
+            etag_timeout=60,
+            tqdm_class=PipeFileTqdm,
+        )
+        with completed_lock:
+            completed += 1
+            done_n = completed
+        if pipe and (done_n % 10 == 0 or done_n == len(files) or done_n <= 3):
+            try:
+                pipe.send(f"已完成文件 {done_n}/{len(files)}：{filename}")
+            except Exception:
+                pass
+        return path
+
+    workers = max(1, min(int(max_workers), 32, len(files)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_one, f): f for f in files}
+        for fut in as_completed(futures):
+            name = futures[fut]
+            try:
+                fut.result()
+            except Exception as exc:
+                with errors_lock:
+                    errors.append(f"{name}: {exc}")
+                if pipe:
+                    try:
+                        pipe.send(f"错误：文件下载失败 {name}：{exc}")
+                    except Exception:
+                        pass
+
+    if errors:
+        sample = "\n".join(errors[:8])
+        more = f"\n… 另有 {len(errors) - 8} 个文件失败" if len(errors) > 8 else ""
+        raise RuntimeError(
+            f"{len(errors)}/{len(files)} 个文件下载失败。示例：\n{sample}{more}"
+        )
+
+    return os.path.realpath(repo_dir)
 
 
 def download_modelscope(

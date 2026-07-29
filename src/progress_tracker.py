@@ -186,6 +186,61 @@ class DownloadProgressTracker:
             return False
 
         changed = False
+
+        # Structured per-file lines from parallel hub download:
+        # [HF_FILE]\tname\tn\ttotal\tstatus
+        if text.startswith("[HF_FILE]\t"):
+            parts = text.split("\t")
+            if len(parts) >= 4:
+                name = parts[1]
+                try:
+                    done = int(parts[2])
+                    total = int(parts[3])
+                except ValueError:
+                    return False
+                status = parts[4] if len(parts) > 4 else "downloading"
+                short = self._short_name(name)
+                fp = self.files.get(short) or FileProgress(name=short, source="log")
+                fp.done_bytes = done
+                fp.total_bytes = total
+                if total > 0:
+                    fp.pct = min(100.0, 100.0 * done / total)
+                prev = self._disk_prev.get(short)
+                now = time.time()
+                if prev is not None:
+                    prev_n, prev_t = prev
+                    dt = max(1e-3, now - prev_t)
+                    delta = done - prev_n
+                    if delta >= 0:
+                        fp.rate_bps = delta / dt
+                self._disk_prev[short] = (done, now)
+                fp.updated_at = now
+                fp.source = "log"
+                if status == "done" or (total > 0 and done >= total):
+                    fp.status = "完成"
+                    fp.pct = 100.0
+                    if short not in self._seen_complete:
+                        self._seen_complete.add(short)
+                        self.completed_count = max(
+                            self.completed_count, len(self._seen_complete)
+                        )
+                else:
+                    fp.status = "下载中"
+                self.files[short] = fp
+                # overall from sum of tracked files (approx for active set)
+                self._recompute_overall_from_files()
+                return True
+            return False
+
+        if text.startswith("[HF_META]\t"):
+            parts = text.split("\t")
+            if len(parts) >= 3 and parts[1] == "files":
+                try:
+                    self.expected_files = int(parts[2])
+                    return True
+                except ValueError:
+                    return False
+
         m_fetch = _RE_FETCHING.search(text)
         if m_fetch:
             self.expected_files = int(m_fetch.group("n"))
@@ -402,6 +457,20 @@ class DownloadProgressTracker:
         }
 
     # ----- internals -----
+
+    def _recompute_overall_from_files(self) -> None:
+        """Build a rough overall bar from known file rows + expected count."""
+        if not self.files:
+            return
+        done = sum(f.done_bytes for f in self.files.values())
+        total = sum(f.total_bytes for f in self.files.values() if f.total_bytes > 0)
+        rate = sum(f.rate_bps for f in self.files.values() if f.status == "下载中")
+        pct = 0.0
+        if total > 0:
+            pct = 100.0 * done / total
+        elif self.expected_files and self.completed_count:
+            pct = 100.0 * self.completed_count / max(1, self.expected_files)
+        self._set_overall("并发文件合计（近似）", pct, done, total, rate)
 
     def _set_overall(
         self,

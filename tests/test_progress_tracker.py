@@ -90,3 +90,18 @@ def test_fetching_files_not_treated_as_bytes():
     assert t.completed_count == 100
     # should not invent overall byte progress from 100/10755
     assert t.overall is None
+
+
+def test_hf_file_structured_progress():
+    t = DownloadProgressTracker()
+    t.feed("[HF_META]\tfiles\t100")
+    assert t.expected_files == 100
+    assert t.feed("[HF_FILE]\tshards/a.parquet\t50\t100\tdownloading")
+    assert any("a.parquet" in k or "shards" in k for k in t.files)
+    fp = next(iter(t.files.values()))
+    assert fp.status == "下载中"
+    assert fp.pct == 50.0
+    assert t.feed("[HF_FILE]\tshards/a.parquet\t100\t100\tdone")
+    fp = next(iter(t.files.values()))
+    assert fp.status == "完成"
+    assert t.completed_count >= 1

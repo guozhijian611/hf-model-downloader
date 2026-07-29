@@ -1537,6 +1537,9 @@ class MainWindow(QMainWindow):
             self._monitor_window.feed_log(text)
         except Exception:
             pass
+        # Structured per-file ticks go to the monitor panel only (avoid log flood).
+        if text.startswith("[HF_FILE]") or text.startswith("[HF_META]"):
+            return
         self.log_text.append(text)
         self.log_text.verticalScrollBar().setValue(
             self.log_text.verticalScrollBar().maximum()
