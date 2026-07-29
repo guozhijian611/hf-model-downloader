@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.19.0 (2026-07-29)
+
+### Features
+
+- Floating monitor window and fix file progress recognition
+  ([`9058858`](https://github.com/guozhijian611/hf-model-downloader/commit/9058858cc732e88399ac9f9b66471cf7392b5edb))
+
+
 ## v0.18.1 (2026-07-29)
 
 ### Bug Fixes
