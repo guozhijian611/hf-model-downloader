@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.10.1 (2026-07-29)
+
+### Bug Fixes
+
+- **download**: Use Formatter.formatTime in UI log handler
+  ([`d2eef6c`](https://github.com/guozhijian611/hf-model-downloader/commit/d2eef6c6518f8f095727cbbad2449aec8c5554e5))
+
+
 ## v0.10.0 (2026-07-29)
 
 ### Features
