@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.8.2 (2026-07-29)
+
+### Continuous Integration
+
+- Call multi-platform build from release workflow
+  ([`b208877`](https://github.com/guozhijian611/hf-model-downloader/commit/b208877a3ae04e773d18f7d2da90941a192695b7))
+
+
 ## v0.8.1 (2026-07-29)
 
 ### Chores
