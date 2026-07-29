@@ -78,15 +78,18 @@ class LogHandler(logging.Handler):
     def __init__(self, log_signal):
         super().__init__()
         self.log_signal = log_signal
+        # formatTime lives on Formatter, not Handler.
+        self._time_formatter = logging.Formatter()
 
     def emit(self, record):
         try:
             level = self._LEVEL_CN.get(record.levelname, record.levelname)
-            stamp = self.formatTime(record, "%H:%M:%S")
+            stamp = self._time_formatter.formatTime(record, datefmt="%H:%M:%S")
             msg = f"{stamp} [{level}] {record.getMessage()}"
             self.log_signal.emit(msg)
-        except RuntimeError:
-            pass
+        except Exception:
+            # Never let logging failures abort the download thread.
+            self.handleError(record)
 
 
 class ThreadSafeSignalEmitter(QObject):
