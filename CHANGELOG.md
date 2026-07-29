@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.8.0 (2026-07-29)
+
+### Features
+
+- Add online update check against GitHub Releases
+  ([`3c1e161`](https://github.com/guozhijian611/hf-model-downloader/commit/3c1e16100b30b78aaad51565c51a605b306ea65c))
+
+
 ## v0.7.0 (2026-07-29)
 
 ### Features
