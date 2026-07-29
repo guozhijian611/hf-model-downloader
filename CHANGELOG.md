@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.10.0 (2026-07-29)
+
+### Features
+
+- Write runtime and crash logs to a local log directory
+  ([`3dc3af5`](https://github.com/guozhijian611/hf-model-downloader/commit/3dc3af5f9f5e150f565ee1c228cd4fe705cdfac1))
+
+
 ## v0.9.1 (2026-07-29)
 
 ### Bug Fixes
