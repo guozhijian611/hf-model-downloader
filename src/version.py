@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 # Keep in sync with pyproject.toml [project].version when packaging as a frozen app.
-FALLBACK_VERSION = "0.6.2"
+FALLBACK_VERSION = "0.8.0"
 
 
 def _read_pyproject_version() -> str | None:

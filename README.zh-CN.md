@@ -34,7 +34,7 @@
 
 下载 **模型（Model）** 或 **数据集（Dataset）**。支持 Token 鉴权、实时进度与日志、中断下载，并通过 PyInstaller 打包成可独立运行的安装包。
 
-当前版本：**0.6.2**（见 `pyproject.toml`）。
+当前版本：**0.8.0**（见 `pyproject.toml`）。
 
 ## 主要功能
 
