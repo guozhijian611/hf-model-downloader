@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.20.0 (2026-07-29)
+
+### Features
+
+- Add hour/day windows for traffic monitor history
+  ([`1b1c783`](https://github.com/guozhijian611/hf-model-downloader/commit/1b1c7837f7b6a6733c23ad2a88139070cbd8fcb5))
+
+
 ## v0.19.2 (2026-07-29)
 
 ### Bug Fixes
