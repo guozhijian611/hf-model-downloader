@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.19.2 (2026-07-29)
+
+### Bug Fixes
+
+- Wire HF hub proxy via httpx client factory
+  ([`f62610f`](https://github.com/guozhijian611/hf-model-downloader/commit/f62610f948d44b7c1c7e6cc6be93e7767db4e92d))
+
+
 ## v0.19.1 (2026-07-29)
 
 ### Bug Fixes
