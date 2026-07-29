@@ -342,8 +342,11 @@ class UnifiedDownloadWorker(QThread):
             self._safe_emit("download_log", "下载进程已启动，等待数据传输...")
 
             download_completed = False
+            user_cancelled = False
+            self._last_process_errors: list[str] = []
             while self._download_process.is_alive():
                 if self._cancel_event.is_set() or self.isInterruptionRequested():
+                    user_cancelled = True
                     self._logger.info("检测到取消请求，正在终止下载进程")
                     self._download_process.terminate()
                     break
@@ -356,6 +359,8 @@ class UnifiedDownloadWorker(QThread):
                     f"{platform_cn} 下载进程退出码：{self._download_process.exitcode}"
                 )
 
+            # Stop the pipe reader thread only — do NOT treat this as user cancel.
+            stop_requested = user_cancelled
             self._cancel_event.set()
             if self._output_thread:
                 self._output_thread.join(timeout=2.0)
@@ -368,9 +373,14 @@ class UnifiedDownloadWorker(QThread):
                 )
                 self._logger.info(f"{platform_cn} 下载成功")
                 self._safe_emit("download_finished")
-            elif self._cancel_event.is_set() and not download_completed:
+            elif stop_requested:
                 raise Exception("用户已取消下载")
             else:
+                detail = ""
+                if self._last_process_errors:
+                    detail = self._last_process_errors[-1]
+                if detail:
+                    raise Exception(detail)
                 raise Exception(
                     f"{platform_cn} 下载进程失败"
                     f"（退出码 {self._download_process.exitcode}）。"
@@ -403,7 +413,13 @@ class UnifiedDownloadWorker(QThread):
                         output = self._pipe_reader.recv()
                         if output == "DOWNLOAD_COMPLETE":
                             break
-                        self._safe_emit("download_log", str(output))
+                        text = str(output)
+                        # Capture child-process error lines for the final UI message.
+                        if text.startswith("错误：") or text.startswith("Error:"):
+                            if not hasattr(self, "_last_process_errors"):
+                                self._last_process_errors = []
+                            self._last_process_errors.append(text)
+                        self._safe_emit("download_log", text)
                     except EOFError:
                         break
                     except Exception as e:

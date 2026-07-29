@@ -125,6 +125,29 @@ class SafePipeWriter:
         self.pipe = None
 
 
+def _hf_friendly_error(exc: Exception, endpoint: str) -> str:
+    msg = str(exc)
+    tips: list[str] = [f"Hugging Face 下载失败：{msg}"]
+    lower = msg.lower()
+    if (
+        "cannot find the requested files in the local cache" in lower
+        or "error happened while trying to locate the file" in lower
+        or "connection" in lower
+        or "timed out" in lower
+        or "timeout" in lower
+        or "max retries" in lower
+    ):
+        tips.append("可能原因与建议：")
+        tips.append(
+            f"1) 当前 Endpoint「{endpoint}」连不上或镜像不完整，"
+            "可改试 https://huggingface.co（需代理时请启用代理）"
+        )
+        tips.append("2) 网络不稳定：开启系统/本机代理后重试（支持断点续传）")
+        tips.append("3) 私有/门禁仓库：请填写有效 HF Token")
+        tips.append("4) 超大仓库文件很多时，可降低并发或换网络环境再试")
+    return "\n".join(tips)
+
+
 def download_huggingface(
     model_id: str,
     save_path: str,
@@ -145,9 +168,12 @@ def download_huggingface(
     proxy_map = proxies_dict(proxy)
 
     repo_dir = os.path.join(save_path, model_id.split("/")[-1])
+    using_mirror = "mirror" in resolved_endpoint.lower()
 
     if pipe:
-        if not xet_available():
+        if using_mirror:
+            pipe.send("提示：镜像站已禁用 Xet 传输，改用标准 HTTP（兼容性更好）。")
+        elif not xet_available():
             pipe.send(
                 "警告：未检测到 hf_xet，"
                 "大文件可能回退为普通 HTTP 下载（速度可能较慢）。"
@@ -155,11 +181,27 @@ def download_huggingface(
         if proxy_map:
             pipe.send(f"Hugging Face 下载使用代理：{normalize_proxy(proxy)}")
         pipe.send(f"开始从 Hugging Face 下载：{model_id}")
+        pipe.send(f"仓库类型：{repo_type}")
         pipe.send(f"保存目录：{repo_dir}")
         pipe.send(f"Endpoint：{resolved_endpoint}")
 
+    # Large multi-file repos are more stable with moderate concurrency.
     cpu_count = multiprocessing.cpu_count()
-    max_workers = min(cpu_count + 2, 8)
+    max_workers = min(cpu_count, 4) if using_mirror else min(cpu_count + 2, 8)
+
+    # Datasets often need many file types; only skip junk / VCS noise for them.
+    if repo_type == "dataset":
+        ignore_patterns = [".*", "__pycache__/*"]
+    else:
+        ignore_patterns = [
+            "*.h5",
+            "*.ot",
+            "*.msgpack",
+            "*.bin",
+            "*.pkl",
+            "*.onnx",
+            ".*",
+        ]
 
     try:
         result = snapshot_download(
@@ -170,22 +212,14 @@ def download_huggingface(
             force_download=False,
             max_workers=max_workers,
             tqdm_class=UnifiedProgressBar,
-            ignore_patterns=[
-                "*.h5",
-                "*.ot",
-                "*.msgpack",
-                "*.bin",
-                "*.pkl",
-                "*.onnx",
-                ".*",
-            ],
+            ignore_patterns=ignore_patterns,
             local_files_only=False,
-            etag_timeout=30,
+            etag_timeout=60,
             proxies=proxy_map,
             endpoint=resolved_endpoint,
         )
     except Exception as exc:
-        _abort_download(pipe, f"Hugging Face 下载失败：{exc}")
+        _abort_download(pipe, _hf_friendly_error(exc, resolved_endpoint))
 
     if pipe:
         pipe.send(f"Hugging Face 下载完成：{result}")

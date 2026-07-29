@@ -10,6 +10,9 @@ _HF_DOWNLOAD_ENV_VARS = (
     "HF_TOKEN",
     "HF_ENDPOINT",
     "HF_HUB_DISABLE_SSL_VERIFICATION",
+    "HF_HUB_DISABLE_XET",
+    "HF_HUB_ETAG_TIMEOUT",
+    "HF_HUB_DOWNLOAD_TIMEOUT",
 )
 
 DEFAULT_HF_MIRROR_ENDPOINT = "https://hf-mirror.com"
@@ -32,10 +35,18 @@ def apply_hf_download_env(
 
     resolved_endpoint = resolve_hf_endpoint(endpoint)
     os.environ["HF_ENDPOINT"] = resolved_endpoint
-    if "hf-mirror.com" in resolved_endpoint:
+    # More tolerant timeouts for large repos / mirrors.
+    os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
+    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "120")
+
+    if "hf-mirror.com" in resolved_endpoint or "mirror" in resolved_endpoint.lower():
         os.environ["HF_HUB_DISABLE_SSL_VERIFICATION"] = "1"
+        # Xet + third-party mirrors is a common failure mode; force classic HTTP.
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
     else:
         os.environ.pop("HF_HUB_DISABLE_SSL_VERIFICATION", None)
+        # Keep Xet available for official hub unless user disabled it.
+        os.environ.pop("HF_HUB_DISABLE_XET", None)
 
 
 def clear_hf_download_env() -> None:
