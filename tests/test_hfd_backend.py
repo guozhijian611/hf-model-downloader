@@ -39,3 +39,11 @@ def test_missing_deps_and_install_plan_shape():
     # If aria2c already present, plan may be empty — still valid
     for cmd in cmds:
         assert isinstance(cmd, list) and cmd
+
+
+def test_tools_bin_dir_and_portable_marker():
+    from src.hfd_backend import _PORTABLE_ARIA2_CMD, tools_bin_dir
+
+    d = tools_bin_dir()
+    assert d.name == "tools" or d.as_posix().endswith("tools")
+    assert _PORTABLE_ARIA2_CMD[0].startswith("__portable")

@@ -712,24 +712,35 @@ class MainWindow(QMainWindow):
             return
 
         if not can_auto_install_hfd_deps():
-            QMessageBox.information(
-                self,
-                "手动安装 hfd 依赖",
-                "缺少：" + "、".join(missing) + "\n\n"
-                "自动安装需要本机已有包管理器：\n"
-                "· macOS：Homebrew → brew install aria2\n"
-                "· Windows：winget install aria2.aria2\n"
-                "  以及 Git for Windows（提供 bash）\n"
-                "· Linux：sudo apt/dnf install aria2\n\n"
-                "装好后请完全退出并重新打开本程序。",
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Information)
+            box.setWindowTitle("手动安装 hfd 依赖")
+            box.setText("缺少：" + "、".join(missing))
+            box.setInformativeText(
+                "Windows 无 winget 时：\n"
+                "· aria2：一键安装会下载官方便携包到\n"
+                "  %LOCALAPPDATA%\\hf-model-downloader\\tools\n"
+                "· bash：需手动装 Git for Windows\n"
+                "  https://git-scm.com/download/win\n\n"
+                "装好后请重启本程序。"
             )
+            open_git = box.addButton(
+                "打开 Git 下载页", QMessageBox.ButtonRole.ActionRole
+            )
+            box.addButton("关闭", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is open_git:
+                QDesktopServices.openUrl(QUrl("https://git-scm.com/download/win"))
             return
 
         reply = QMessageBox.question(
             self,
             "安装 hfd 依赖",
             "将尝试自动安装：\n· " + "\n· ".join(missing) + "\n\n"
-            "可能调用 brew / winget / choco / apt（Linux 可能需要 sudo 密码）。\n"
+            "Windows：优先 winget；没有则下载官方便携 aria2\n"
+            "（%LOCALAPPDATA%\\hf-model-downloader\\tools，无需管理员）。\n"
+            "bash 若仍缺，需手动安装 Git for Windows。\n"
+            "macOS/Linux：brew / apt 等。\n\n"
             "是否继续？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,

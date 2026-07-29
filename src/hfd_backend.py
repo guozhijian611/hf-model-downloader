@@ -45,12 +45,43 @@ def find_bash() -> str | None:
     return None
 
 
+def tools_bin_dir() -> Path:
+    """User-local tools dir for portable deps (no admin / no winget)."""
+    if platform.system().lower().startswith("win"):
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home())
+        root = base / "hf-model-downloader" / "tools"
+    else:
+        root = Path.home() / ".hf-model-downloader" / "tools"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return root
+
+
 def find_aria2c() -> str | None:
-    return shutil.which("aria2c")
+    found = shutil.which("aria2c") or shutil.which("aria2c.exe")
+    if found:
+        return found
+    # Portable install from one-click button
+    for name in ("aria2c.exe", "aria2c"):
+        p = tools_bin_dir() / name
+        if p.is_file():
+            return str(p)
+    # Nested extract folders
+    try:
+        for p in tools_bin_dir().rglob("aria2c.exe"):
+            return str(p)
+        for p in tools_bin_dir().rglob("aria2c"):
+            if p.is_file():
+                return str(p)
+    except OSError:
+        pass
+    return None
 
 
 def find_wget() -> str | None:
-    return shutil.which("wget")
+    return shutil.which("wget") or shutil.which("wget.exe")
 
 
 def find_hfd_script() -> Path | None:
@@ -106,10 +137,17 @@ def missing_hfd_deps() -> list[str]:
     return missing
 
 
+# Sentinel argv for portable aria2 zip install (no winget/choco/scoop).
+_PORTABLE_ARIA2_CMD = ["__portable_aria2_windows__"]
+ARIA2_RELEASES_API = "https://api.github.com/repos/aria2/aria2/releases/latest"
+GIT_FOR_WINDOWS_URL = "https://git-scm.com/download/win"
+
+
 def hfd_install_plan() -> tuple[list[list[str]], list[str]]:
     """Return (shell commands as argv lists, manual tips) to install missing deps.
 
-    Commands are best-effort via brew / winget / choco / scoop / apt / dnf.
+    Windows without winget: download official portable aria2 zip into
+    %LOCALAPPDATA%\\hf-model-downloader\\tools (no admin required).
     """
     cmds: list[list[str]] = []
     tips: list[str] = []
@@ -143,9 +181,11 @@ def hfd_install_plan() -> tuple[list[list[str]], list[str]]:
             elif shutil.which("scoop"):
                 cmds.append(["scoop", "install", "aria2"])
             else:
+                cmds.append(list(_PORTABLE_ARIA2_CMD))
                 tips.append(
-                    "Windows：安装 winget/scoop/choco 后装 aria2，或从\n"
-                    "https://github.com/aria2/aria2/releases 下载并加入 PATH"
+                    "未检测到 winget/scoop/choco：将下载官方便携版 aria2 到\n"
+                    f"{tools_bin_dir()}\n"
+                    "（无需管理员权限；仅当前用户可用）"
                 )
         else:  # linux
             if shutil.which("apt-get"):
@@ -175,10 +215,14 @@ def hfd_install_plan() -> tuple[list[list[str]], list[str]]:
             )
         elif shutil.which("choco"):
             cmds.append(["choco", "install", "git", "-y"])
+        elif shutil.which("scoop"):
+            cmds.append(["scoop", "install", "git"])
         else:
             tips.append(
-                "Windows 还需 bash：安装 Git for Windows\n"
-                "https://git-scm.com/download/win"
+                "Windows 还需 bash（hfd.sh 依赖）：\n"
+                f"请安装 Git for Windows：{GIT_FOR_WINDOWS_URL}\n"
+                "安装时勾选 Git from the command line，装完重启本程序。\n"
+                "（无 winget 时无法静默安装 Git，需手动安装）"
             )
 
     if not find_hfd_script():
@@ -191,8 +235,108 @@ def hfd_install_plan() -> tuple[list[list[str]], list[str]]:
 
 
 def can_auto_install_hfd_deps() -> bool:
+    """True if something can be installed automatically (incl. portable aria2)."""
     cmds, _tips = hfd_install_plan()
     return bool(cmds)
+
+
+def install_portable_aria2_windows(log_cb=None) -> tuple[bool, str]:
+    """Download official win64 aria2 zip into tools_bin_dir()."""
+    if not platform.system().lower().startswith("win"):
+        return False, "便携 aria2 安装仅支持 Windows"
+
+    def _log(msg: str) -> None:
+        if log_cb:
+            log_cb(msg)
+
+    try:
+        import json
+        import zipfile
+        from urllib.request import Request, urlopen
+    except ImportError as exc:
+        return False, f"缺少解压/下载库：{exc}"
+
+    dest = tools_bin_dir()
+    _log(f"准备下载便携版 aria2 → {dest}")
+
+    zip_url = None
+    zip_name = "aria2-win-64bit.zip"
+    try:
+        req = Request(
+            ARIA2_RELEASES_API,
+            headers={
+                "User-Agent": "hf-model-downloader",
+                "Accept": "application/json",
+            },
+        )
+        with urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        for asset in data.get("assets") or []:
+            name = asset.get("name") or ""
+            url = asset.get("browser_download_url") or ""
+            if "win-64bit" in name.lower() and name.lower().endswith(".zip") and url:
+                zip_url = url
+                zip_name = name
+                break
+    except Exception as exc:
+        _log(f"读取 GitHub Releases 失败，使用固定版本链接：{exc}")
+
+    if not zip_url:
+        zip_name = "aria2-1.37.0-win-64bit-build1.zip"
+        zip_url = (
+            "https://github.com/aria2/aria2/releases/download/release-1.37.0/"
+            + zip_name
+        )
+
+    zip_path = dest / zip_name
+    try:
+        _log(f"下载：{zip_url}")
+        req = Request(zip_url, headers={"User-Agent": "hf-model-downloader"})
+        with urlopen(req, timeout=120) as resp, zip_path.open("wb") as fh:
+            while True:
+                chunk = resp.read(256 * 1024)
+                if not chunk:
+                    break
+                fh.write(chunk)
+        _log(f"已保存：{zip_path}（{zip_path.stat().st_size} bytes）")
+    except Exception as exc:
+        return False, f"下载 aria2 失败：{exc}"
+
+    extract_dir = dest / "aria2-portable"
+    try:
+        if extract_dir.exists():
+            shutil.rmtree(extract_dir, ignore_errors=True)
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(extract_dir)
+        _log(f"已解压到：{extract_dir}")
+    except Exception as exc:
+        return False, f"解压 aria2 失败：{exc}"
+
+    exe = None
+    for p in extract_dir.rglob("aria2c.exe"):
+        exe = p
+        break
+    if not exe:
+        return False, "压缩包中未找到 aria2c.exe"
+
+    target = dest / "aria2c.exe"
+    try:
+        shutil.copy2(exe, target)
+        _log(f"aria2c 已就绪：{target}")
+    except OSError:
+        target = exe
+        _log(f"使用解压路径中的 aria2c：{target}")
+
+    tools = str(dest)
+    path = os.environ.get("PATH", "")
+    if tools not in path.split(os.pathsep):
+        os.environ["PATH"] = tools + os.pathsep + path
+    _refresh_path_hints()
+
+    if find_aria2c():
+        return True, f"便携 aria2 安装成功：{find_aria2c()}"
+    return False, f"已解压但仍检测不到 aria2c，请检查 {target}"
 
 
 def run_hfd_deps_install(
@@ -212,10 +356,18 @@ def run_hfd_deps_install(
             log_cb(msg)
         return False, msg
 
-    logs: list[str] = []
     for cmd in cmds:
+        if cmd == _PORTABLE_ARIA2_CMD or (
+            len(cmd) == 1 and cmd[0] == _PORTABLE_ARIA2_CMD[0]
+        ):
+            if log_cb:
+                log_cb("使用便携包安装 aria2（无需 winget）…")
+            ok, summary = install_portable_aria2_windows(log_cb=log_cb)
+            if log_cb:
+                log_cb(summary)
+            continue
+
         line = "$ " + " ".join(cmd)
-        logs.append(line)
         if log_cb:
             log_cb(line)
         try:
@@ -229,43 +381,34 @@ def run_hfd_deps_install(
             proc = subprocess.run(cmd, **run_kwargs)
             out = (proc.stdout or "").strip()
             err = (proc.stderr or "").strip()
-            if out:
+            if out and log_cb:
                 for part in out.splitlines()[-20:]:
-                    logs.append(part)
-                    if log_cb:
-                        log_cb(part)
-            if err:
+                    log_cb(part)
+            if err and log_cb:
                 for part in err.splitlines()[-10:]:
-                    logs.append(part)
-                    if log_cb:
-                        log_cb(part)
-            if proc.returncode != 0:
-                msg = f"命令失败（退出码 {proc.returncode}）：{' '.join(cmd)}"
-                logs.append(msg)
-                if log_cb:
-                    log_cb(msg)
-                # Continue other commands (e.g. git after aria2)
+                    log_cb(part)
+            if proc.returncode != 0 and log_cb:
+                log_cb(f"命令失败（退出码 {proc.returncode}）：{' '.join(cmd)}")
         except subprocess.TimeoutExpired:
             msg = f"命令超时：{' '.join(cmd)}"
-            logs.append(msg)
             if log_cb:
                 log_cb(msg)
             return False, msg
         except FileNotFoundError:
             msg = f"找不到命令：{cmd[0]}"
-            logs.append(msg)
             if log_cb:
                 log_cb(msg)
-            return False, msg
+            if cmd[0].lower() in ("winget", "choco", "scoop") and not find_aria2c():
+                if log_cb:
+                    log_cb("包管理器不可用，回退便携 aria2…")
+                install_portable_aria2_windows(log_cb=log_cb)
+            continue
         except Exception as exc:
             msg = f"执行失败：{exc}"
-            logs.append(msg)
             if log_cb:
                 log_cb(msg)
             return False, msg
 
-    # PATH may not refresh in current process — re-check which()
-    # On Windows, winget installs often need new shell; try common locations.
     _refresh_path_hints()
 
     missing_after = missing_hfd_deps()
@@ -275,9 +418,20 @@ def run_hfd_deps_install(
             log_cb(ok_msg)
         return True, ok_msg
 
+    only_bash = len(missing_after) == 1 and "bash" in missing_after[0].lower()
     tip_txt = "\n".join(tips) if tips else ""
+    if only_bash and find_aria2c():
+        fail = (
+            "aria2 已就绪，但仍缺少 bash。\n"
+            f"请安装 Git for Windows：{GIT_FOR_WINDOWS_URL}\n"
+            "装完后重启本程序，再选 hfd 下载。\n" + tip_txt
+        )
+        if log_cb:
+            log_cb(fail)
+        return False, fail
+
     fail = (
-        "安装命令已执行，但仍缺："
+        "安装步骤已执行，但仍缺："
         + "、".join(missing_after)
         + "。请关闭本程序后重新打开（刷新 PATH），"
         "或按提示手动安装。\n" + tip_txt
@@ -294,6 +448,7 @@ def _refresh_path_hints() -> None:
     if system.startswith("win"):
         extras.extend(
             [
+                str(tools_bin_dir()),
                 r"C:\Program Files\Git\bin",
                 r"C:\Program Files (x86)\Git\bin",
                 os.path.expandvars(r"%LOCALAPPDATA%\Programs\Git\bin"),
@@ -307,7 +462,7 @@ def _refresh_path_hints() -> None:
     path = os.environ.get("PATH", "")
     parts = path.split(os.pathsep)
     for e in extras:
-        if e and e not in parts and os.path.isdir(e):
+        if e and e not in parts and (os.path.isdir(e) or e == str(tools_bin_dir())):
             parts.insert(0, e)
     os.environ["PATH"] = os.pathsep.join(parts)
 
