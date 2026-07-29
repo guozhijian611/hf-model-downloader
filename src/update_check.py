@@ -24,8 +24,9 @@ LATEST_RELEASE_API = (
     f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 )
 RELEASES_PAGE_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
-DEFAULT_TIMEOUT_SEC = 15
-DOWNLOAD_TIMEOUT_SEC = 600
+# (connect timeout, read timeout) — avoid hanging forever on bad networks/proxies.
+DEFAULT_TIMEOUT = (10, 20)
+DOWNLOAD_TIMEOUT = (15, 60)
 
 
 @dataclass(frozen=True)
@@ -112,7 +113,7 @@ def pick_release_asset(assets: list[dict]) -> ReleaseAsset | None:
 
 def check_for_update(
     proxy: str | None = None,
-    timeout_sec: float = DEFAULT_TIMEOUT_SEC,
+    timeout=DEFAULT_TIMEOUT,
 ) -> UpdateCheckResult:
     """Query GitHub for the latest release and compare with the local version."""
     current = normalize_version(get_app_version())
@@ -126,7 +127,7 @@ def check_for_update(
         response = requests.get(
             LATEST_RELEASE_API,
             headers=headers,
-            timeout=timeout_sec,
+            timeout=timeout,
             proxies=proxies_dict(proxy),
         )
         if response.status_code == 404:
@@ -285,7 +286,7 @@ def download_file(
     url: str,
     dest: Path,
     proxy: str | None = None,
-    timeout_sec: float = DOWNLOAD_TIMEOUT_SEC,
+    timeout=DOWNLOAD_TIMEOUT,
     progress_cb=None,
 ) -> None:
     headers = {"User-Agent": f"hf-model-downloader/{get_app_version()}"}
@@ -293,7 +294,7 @@ def download_file(
         url,
         headers=headers,
         stream=True,
-        timeout=timeout_sec,
+        timeout=timeout,
         proxies=proxies_dict(proxy),
     ) as response:
         response.raise_for_status()
@@ -306,8 +307,12 @@ def download_file(
                     continue
                 fh.write(chunk)
                 done += len(chunk)
-                if progress_cb and total:
-                    progress_cb(done, total)
+                if progress_cb:
+                    if total:
+                        progress_cb(done, total)
+                    elif done % (1024 * 1024) < 256 * 1024:
+                        # No Content-Length: still emit coarse progress.
+                        progress_cb(done, max(done, 1))
 
 
 def _extract_zip(zip_path: Path, dest_dir: Path) -> Path:

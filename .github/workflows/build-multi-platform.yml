@@ -18,6 +18,11 @@ on:
         description: "Version without v prefix (e.g., 0.2.0)"
         required: true
         type: string
+      include_intel:
+        description: "Also build Intel macOS (macos-13; may queue a long time)"
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       release_tag:
@@ -28,6 +33,11 @@ on:
         description: "Version without v prefix (e.g., 0.8.1)"
         required: true
         type: string
+      include_intel:
+        description: "Also build Intel macOS (optional; may starve on runners)"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -36,16 +46,16 @@ permissions:
 concurrency:
   # One build pipeline per release tag (avoid colliding runs on main).
   group: build-${{ inputs.release_tag || github.event.release.tag_name || github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
-  # Shared by all jobs; empty on misconfigured events so steps fail fast.
   RELEASE_TAG: ${{ inputs.release_tag || github.event.release.tag_name }}
   RELEASE_VERSION: ${{ inputs.version || github.event.release.tag_name }}
 
 jobs:
   resolve-meta:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       tag: ${{ steps.meta.outputs.tag }}
       version: ${{ steps.meta.outputs.version }}
@@ -59,7 +69,6 @@ jobs:
             echo "❌ Missing release tag (inputs.release_tag or github.event.release.tag_name)"
             exit 1
           fi
-          # Normalize tag to always include leading v for gh release commands.
           case "$TAG" in
             v*) ;;
             *) TAG="v${TAG}" ;;
@@ -79,6 +88,7 @@ jobs:
   build-macos-arm64:
     needs: resolve-meta
     runs-on: macos-latest # ARM64
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -119,9 +129,14 @@ jobs:
             --clobber
           echo "ARM64 DMG uploaded successfully"
 
+  # Intel Mac runners are often starved and can queue for hours, blocking the
+  # whole release. Disabled by default; enable via include_intel input.
   build-macos-x86:
     needs: resolve-meta
+    if: ${{ inputs.include_intel == true }}
     runs-on: macos-13 # Intel Mac
+    timeout-minutes: 60
+    continue-on-error: true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -165,6 +180,7 @@ jobs:
   build-windows:
     needs: resolve-meta
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -207,7 +223,6 @@ jobs:
           ls -la dist/ || true
           ls -la *.zip 2>/dev/null || true
 
-          # build.py writes the zip at the repository root
           if [ -f "hf-model-downloader-windows-x86_64.zip" ]; then
             ZIP="hf-model-downloader-windows-x86_64.zip"
           elif [ -f "dist/hf-model-downloader-windows-x86_64.zip" ]; then
@@ -222,8 +237,10 @@ jobs:
 
   trigger-homebrew-update:
     needs: [resolve-meta, build-macos-arm64, build-macos-x86]
+    # Skip when Intel build was not requested (needs.x86 is skipped).
+    if: ${{ always() && needs.build-macos-arm64.result == 'success' && needs.build-macos-x86.result == 'success' }}
     runs-on: ubuntu-latest
-    # Homebrew tap is optional; package builds must not fail because of it.
+    timeout-minutes: 20
     continue-on-error: true
     steps:
       - name: Checkout
@@ -239,8 +256,8 @@ jobs:
         run: |
           set -euo pipefail
           echo "Checking release assets for ${RELEASE_TAG}..."
-          gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name'
           assets=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')
+          echo "$assets"
           echo "$assets" | grep -q "hf-model-downloader-arm64.dmg"
           echo "$assets" | grep -q "hf-model-downloader-x86_64.dmg"
           echo "Required DMG files are present"

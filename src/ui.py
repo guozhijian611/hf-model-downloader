@@ -490,8 +490,14 @@ class MainWindow(QMainWindow):
         )
 
         self._update_worker = UpdateCheckWorker(proxy=proxy, parent=self)
-        self._update_worker.finished_result.connect(self._on_update_check_finished)
-        self._update_worker.finished.connect(self._on_update_worker_done)
+        self._update_worker.finished_result.connect(
+            self._on_update_check_finished,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._update_worker.finished.connect(
+            self._on_update_worker_done,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._update_worker.start()
 
     def _on_update_worker_done(self):
@@ -572,10 +578,19 @@ class MainWindow(QMainWindow):
         self._update_apply_worker = UpdateApplyWorker(
             result.asset, proxy=proxy, parent=self
         )
-        self._update_apply_worker.progress.connect(self.update_status)
-        self._update_apply_worker.finished_ok.connect(self._on_update_apply_ok)
-        self._update_apply_worker.failed.connect(self._on_update_apply_failed)
-        self._update_apply_worker.finished.connect(self._on_update_apply_worker_done)
+        self._update_apply_worker.progress.connect(
+            self.update_status, Qt.ConnectionType.QueuedConnection
+        )
+        self._update_apply_worker.finished_ok.connect(
+            self._on_update_apply_ok, Qt.ConnectionType.QueuedConnection
+        )
+        self._update_apply_worker.failed.connect(
+            self._on_update_apply_failed, Qt.ConnectionType.QueuedConnection
+        )
+        self._update_apply_worker.finished.connect(
+            self._on_update_apply_worker_done,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._update_apply_worker.start()
 
     def _on_update_apply_worker_done(self):
@@ -586,28 +601,33 @@ class MainWindow(QMainWindow):
 
     def _on_update_apply_ok(self, script_path: str):
         self.update_status("更新包已就绪，即将退出并替换程序...")
-        reply = QMessageBox.information(
+        # Non-blocking info is easy to miss; use question so user explicitly confirms.
+        reply = QMessageBox.question(
             self,
             "准备安装更新",
             (
                 "更新文件已下载并解压完成。\n\n"
-                "点击「确定」后程序将退出，自动替换文件并重新启动。\n"
-                "请勿手动删除原安装目录。"
+                "点击「Yes」后程序将退出，自动替换文件并重新启动。\n"
+                "请勿手动删除原安装目录。\n\n"
+                "是否现在安装并重启？"
             ),
-            QMessageBox.StandardButton.Ok,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
         )
-        if reply == QMessageBox.StandardButton.Ok:
-            try:
-                launch_updater_and_exit(Path(script_path))
-            except Exception as exc:
-                QMessageBox.critical(
-                    self,
-                    "自动更新失败",
-                    f"无法启动更新脚本：{exc}",
-                )
-                return
-            # Quit so files can be overwritten.
-            QApplication.instance().quit()
+        if reply != QMessageBox.StandardButton.Yes:
+            self.update_status("已取消自动安装（安装包仍在临时目录）。")
+            return
+        try:
+            launch_updater_and_exit(Path(script_path))
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "自动更新失败",
+                f"无法启动更新脚本：{exc}",
+            )
+            return
+        # Quit so files can be overwritten.
+        QApplication.instance().quit()
 
     def _on_update_apply_failed(self, error_msg: str):
         self.update_status(f"自动更新失败：{error_msg}", error=True)

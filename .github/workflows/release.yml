@@ -11,13 +11,16 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Allow a new push to cancel a stalled previous release pipeline (e.g. runner
+# queue deadlock). Package builds use their own per-tag concurrency group.
 concurrency:
   group: release-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   release:
     runs-on: macos-latest
+    timeout-minutes: 30
     outputs:
       released: ${{ steps.release.outputs.released }}
       version: ${{ steps.release.outputs.version }}
