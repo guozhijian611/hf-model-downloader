@@ -174,6 +174,7 @@ def download_with_hfd(
         pipe.send(f"脚本：{script}")
         pipe.send(f"Endpoint：{resolved_endpoint}")
         pipe.send(f"保存目录：{repo_dir}")
+        pipe.send(f"并发：-x {threads}（单文件连接） -j {jobs}（并行文件）")
         pipe.send(f"命令：{' '.join(cmd[:6])} … --local-dir {repo_dir}")
 
     try:

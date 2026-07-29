@@ -156,6 +156,7 @@ def download_huggingface(
     pipe=None,
     repo_type: str = "model",
     proxy: str = None,
+    max_workers: int | None = None,
 ):
     try:
         from huggingface_hub import snapshot_download
@@ -169,6 +170,13 @@ def download_huggingface(
 
     repo_dir = os.path.join(save_path, model_id.split("/")[-1])
     using_mirror = "mirror" in resolved_endpoint.lower()
+
+    # User-configurable concurrency; fall back to previous auto defaults.
+    cpu_count = multiprocessing.cpu_count()
+    if max_workers is None or int(max_workers) <= 0:
+        max_workers = min(cpu_count, 4) if using_mirror else min(cpu_count + 2, 8)
+    else:
+        max_workers = max(1, min(int(max_workers), 32))
 
     if pipe:
         if using_mirror:
@@ -184,10 +192,7 @@ def download_huggingface(
         pipe.send(f"仓库类型：{repo_type}")
         pipe.send(f"保存目录：{repo_dir}")
         pipe.send(f"Endpoint：{resolved_endpoint}")
-
-    # Large multi-file repos are more stable with moderate concurrency.
-    cpu_count = multiprocessing.cpu_count()
-    max_workers = min(cpu_count, 4) if using_mirror else min(cpu_count + 2, 8)
+        pipe.send(f"并发 max_workers={max_workers}")
 
     # Datasets often need many file types; only skip junk / VCS noise for them.
     if repo_type == "dataset":
@@ -316,6 +321,9 @@ def unified_download_model(
     repo_type: str = "model",
     proxy: str = None,
     backend: str = "huggingface-hub",
+    max_workers: int | None = None,
+    hfd_threads: int | None = None,
+    hfd_jobs: int | None = None,
 ):
     """Download entry used by subprocess workers (no Qt)."""
     old_stdout = sys.stdout
@@ -331,6 +339,8 @@ def unified_download_model(
         print("Current Working Directory:", os.getcwd())
         print("Python Executable:", sys.executable)
         print("Download Backend:", backend or "huggingface-hub")
+        print("max_workers:", max_workers)
+        print("hfd_threads:", hfd_threads, "hfd_jobs:", hfd_jobs)
         try:
             print("Process Start Method:", multiprocessing.get_start_method())
         except RuntimeError:
@@ -366,6 +376,8 @@ def unified_download_model(
                         pipe,
                         repo_type,
                         proxy,
+                        threads=hfd_threads if hfd_threads else 8,
+                        jobs=hfd_jobs if hfd_jobs else 5,
                     )
                 else:
                     download_huggingface(
@@ -376,6 +388,7 @@ def unified_download_model(
                         pipe,
                         repo_type,
                         proxy,
+                        max_workers=max_workers,
                     )
             elif platform == "modelscope":
                 if (backend or "").strip() == "hfd":
@@ -416,6 +429,9 @@ def isolated_download_main(
     repo_type,
     proxy=None,
     backend="huggingface-hub",
+    max_workers=None,
+    hfd_threads=None,
+    hfd_jobs=None,
 ):
     """
     Top-level process entry point (must stay free of PyQt imports).
@@ -434,6 +450,9 @@ def isolated_download_main(
             repo_type,
             proxy,
             backend=backend,
+            max_workers=max_workers,
+            hfd_threads=hfd_threads,
+            hfd_jobs=hfd_jobs,
         )
         safe_pipe.close()
     except SystemExit:

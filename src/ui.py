@@ -336,6 +336,38 @@ class MainWindow(QMainWindow):
         retry_layout.addStretch()
         layout.addLayout(retry_layout)
 
+        concurrency_layout = QHBoxLayout()
+        concurrency_layout.addWidget(QLabel("并发:"))
+        concurrency_layout.addWidget(QLabel("hub文件"))
+        self.hub_workers_spin = QSpinBox()
+        self.hub_workers_spin.setRange(1, 32)
+        self.hub_workers_spin.setValue(8)
+        self.hub_workers_spin.setToolTip(
+            "huggingface-hub 并行下载的文件数（max_workers）\n"
+            "越大越吃带宽/CPU；镜像不稳时可降到 2～4"
+        )
+        concurrency_layout.addWidget(self.hub_workers_spin)
+        concurrency_layout.addWidget(QLabel("hfd连接-x"))
+        self.hfd_threads_spin = QSpinBox()
+        self.hfd_threads_spin.setRange(1, 16)
+        self.hfd_threads_spin.setValue(8)
+        self.hfd_threads_spin.setToolTip(
+            "hfd/aria2 单文件分片连接数（-x，最大 10 由 hfd 限制）\n"
+            "提高有助于单文件吃满带宽"
+        )
+        concurrency_layout.addWidget(self.hfd_threads_spin)
+        concurrency_layout.addWidget(QLabel("hfd任务-j"))
+        self.hfd_jobs_spin = QSpinBox()
+        self.hfd_jobs_spin.setRange(1, 16)
+        self.hfd_jobs_spin.setValue(5)
+        self.hfd_jobs_spin.setToolTip(
+            "hfd/aria2 同时下载的文件数（-j，最大 10 由 hfd 限制）\n"
+            "多文件仓库可适当提高；配合代理 LB 更有效"
+        )
+        concurrency_layout.addWidget(self.hfd_jobs_spin)
+        concurrency_layout.addStretch()
+        layout.addLayout(concurrency_layout)
+
         button_layout = QHBoxLayout()
         self.download_button = QPushButton("下载")
         self.download_button.setFixedHeight(standard_button_height)
@@ -478,6 +510,13 @@ class MainWindow(QMainWindow):
         self.stall_restart_checkbox.setChecked(bool(data.get("stall_restart", True)))
         stall_sec = int(data.get("stall_timeout_sec") or 120)
         self.stall_timeout_spin.setValue(max(30, min(600, stall_sec)))
+        self.hub_workers_spin.setValue(
+            max(1, min(32, int(data.get("hub_max_workers") or 8)))
+        )
+        self.hfd_threads_spin.setValue(
+            max(1, min(16, int(data.get("hfd_threads") or 8)))
+        )
+        self.hfd_jobs_spin.setValue(max(1, min(16, int(data.get("hfd_jobs") or 5))))
 
         backend = data.get("download_backend") or BACKEND_HUB
         idx = self.backend_combo.findData(backend)
@@ -556,6 +595,9 @@ class MainWindow(QMainWindow):
             download_backend=self._current_backend(),
             stall_restart=self.stall_restart_checkbox.isChecked(),
             stall_timeout_sec=self.stall_timeout_spin.value(),
+            hub_max_workers=self.hub_workers_spin.value(),
+            hfd_threads=self.hfd_threads_spin.value(),
+            hfd_jobs=self.hfd_jobs_spin.value(),
         )
 
     def closeEvent(self, event):
@@ -926,6 +968,9 @@ class MainWindow(QMainWindow):
             "repo_type": repo_type,
             "proxy": proxy,
             "backend": backend,
+            "max_workers": self.hub_workers_spin.value(),
+            "hfd_threads": self.hfd_threads_spin.value(),
+            "hfd_jobs": self.hfd_jobs_spin.value(),
         }
         logger.info(
             "Start download platform=%s backend=%s repo=%s type=%s "
@@ -980,6 +1025,11 @@ class MainWindow(QMainWindow):
                     f"已开启「卡住无速度自动重启」："
                     f"{self.stall_timeout_spin.value()} 秒无进度将重启"
                 )
+            self.update_status(
+                f"并发：hub文件={params.get('max_workers')} "
+                f"hfd连接-x={params.get('hfd_threads')} "
+                f"hfd任务-j={params.get('hfd_jobs')}"
+            )
         elif self._retry_attempt > 0:
             self.update_status(
                 f"正在进行第 {self._retry_attempt} 次自动重试（断点续传）..."
@@ -997,6 +1047,9 @@ class MainWindow(QMainWindow):
                 skip_validation=skip_validation,
                 endpoints=params.get("endpoints"),
                 backend=params.get("backend") or BACKEND_HUB,
+                max_workers=params.get("max_workers"),
+                hfd_threads=params.get("hfd_threads"),
+                hfd_jobs=params.get("hfd_jobs"),
             )
         except Exception as exc:
             logger.exception("Failed to create download worker: %s", exc)

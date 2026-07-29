@@ -21,6 +21,9 @@ KEY_AUTO_RETRY = "auto_retry"
 KEY_DOWNLOAD_BACKEND = "download_backend"
 KEY_STALL_RESTART = "stall_restart"
 KEY_STALL_TIMEOUT_SEC = "stall_timeout_sec"
+KEY_HUB_MAX_WORKERS = "hub_max_workers"
+KEY_HFD_THREADS = "hfd_threads"
+KEY_HFD_JOBS = "hfd_jobs"
 
 
 def get_settings() -> QSettings:
@@ -46,6 +49,9 @@ def load_form_settings() -> dict:
         ),
         KEY_STALL_RESTART: s.value(KEY_STALL_RESTART, True, type=bool),
         KEY_STALL_TIMEOUT_SEC: s.value(KEY_STALL_TIMEOUT_SEC, 120, type=int),
+        KEY_HUB_MAX_WORKERS: s.value(KEY_HUB_MAX_WORKERS, 8, type=int),
+        KEY_HFD_THREADS: s.value(KEY_HFD_THREADS, 8, type=int),
+        KEY_HFD_JOBS: s.value(KEY_HFD_JOBS, 5, type=int),
     }
 
 
@@ -64,6 +70,9 @@ def save_form_settings(
     download_backend: str = "huggingface-hub",
     stall_restart: bool = True,
     stall_timeout_sec: int = 120,
+    hub_max_workers: int = 8,
+    hfd_threads: int = 8,
+    hfd_jobs: int = 5,
 ) -> None:
     s = get_settings()
     s.setValue(KEY_PLATFORM, platform)
@@ -79,4 +88,7 @@ def save_form_settings(
     s.setValue(KEY_DOWNLOAD_BACKEND, download_backend)
     s.setValue(KEY_STALL_RESTART, stall_restart)
     s.setValue(KEY_STALL_TIMEOUT_SEC, int(stall_timeout_sec))
+    s.setValue(KEY_HUB_MAX_WORKERS, int(hub_max_workers))
+    s.setValue(KEY_HFD_THREADS, int(hfd_threads))
+    s.setValue(KEY_HFD_JOBS, int(hfd_jobs))
     s.sync()
