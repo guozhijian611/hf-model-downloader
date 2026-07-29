@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.23.0 (2026-07-29)
+
+### Features
+
+- Per-file progress for huggingface-hub concurrent downloads
+  ([`03c5dd9`](https://github.com/guozhijian611/hf-model-downloader/commit/03c5dd9b74d70a0c3bcd360b7aaaa27aeaa0f944))
+
+
 ## v0.22.0 (2026-07-29)
 
 ### Features
