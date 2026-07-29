@@ -744,36 +744,48 @@ class MainWindow(QMainWindow):
                 f"正在进行第 {self._retry_attempt} 次自动重试（断点续传）..."
             )
 
-        self.download_worker = UnifiedDownloadWorker(
-            params["platform"],
-            params["repo_id"],
-            params["save_path"],
-            params["token"],
-            params["endpoint"],
-            params["repo_type"],
-            proxy=params["proxy"],
-            skip_validation=skip_validation,
-        )
+        try:
+            self.download_worker = UnifiedDownloadWorker(
+                params["platform"],
+                params["repo_id"],
+                params["save_path"],
+                params["token"],
+                params["endpoint"],
+                params["repo_type"],
+                proxy=params["proxy"],
+                skip_validation=skip_validation,
+            )
+        except Exception as exc:
+            self._set_downloading_ui(False)
+            self.update_status(f"无法启动下载：{exc}", error=True)
+            QMessageBox.critical(self, "下载失败", f"无法启动下载：\n{exc}")
+            return
 
-        self.download_worker.finished.connect(
+        # Use download_* signals — never QThread.finished (that means thread exit).
+        self.download_worker.download_finished.connect(
             self.download_finished, Qt.ConnectionType.QueuedConnection
         )
-        self.download_worker.error.connect(
+        self.download_worker.download_error.connect(
             self.download_error, Qt.ConnectionType.QueuedConnection
         )
-        self.download_worker.status.connect(
+        self.download_worker.download_status.connect(
             self.update_status, Qt.ConnectionType.QueuedConnection
         )
-        self.download_worker.log.connect(
+        self.download_worker.download_log.connect(
             self.update_log, Qt.ConnectionType.QueuedConnection
         )
-        self.download_worker.finished.connect(
+        self.download_worker.download_finished.connect(
             self._on_worker_finished, Qt.ConnectionType.QueuedConnection
         )
-        self.download_worker.error.connect(
+        self.download_worker.download_error.connect(
             self._on_worker_finished, Qt.ConnectionType.QueuedConnection
         )
-        self.download_worker.start()
+        try:
+            self.download_worker.start()
+        except Exception as exc:
+            self._set_downloading_ui(False)
+            self.update_status(f"启动下载线程失败：{exc}", error=True)
+            QMessageBox.critical(self, "下载失败", f"启动下载线程失败：\n{exc}")
 
     def stop_download(self):
         self._user_stopped = True

@@ -40,14 +40,14 @@ logger = logging.getLogger(__name__)
 
 def setup_multiprocessing():
     """Configure multiprocessing for cross-platform compatibility."""
+    # Always safe; required for frozen Windows/macOS child processes.
+    multiprocessing.freeze_support()
+    if getattr(sys, "frozen", False):
+        os.environ["PYINSTALLER_HOOKS_DIR"] = "1"
     try:
         multiprocessing.set_start_method(MULTIPROCESSING_START_METHOD, force=True)
     except RuntimeError as e:
         logger.warning(f"Failed to set multiprocessing method: {e}")
-
-    if getattr(sys, "frozen", False):
-        os.environ["PYINSTALLER_HOOKS_DIR"] = "1"
-        multiprocessing.freeze_support()
 
 
 def setup_environment():
@@ -95,4 +95,6 @@ def main():
 
 
 if __name__ == "__main__":
+    # freeze_support must run before any GUI/multiprocessing work in frozen builds.
+    multiprocessing.freeze_support()
     main()
