@@ -47,3 +47,21 @@ def test_tools_bin_dir_and_portable_marker():
     d = tools_bin_dir()
     assert d.name == "tools" or d.as_posix().endswith("tools")
     assert _PORTABLE_ARIA2_CMD[0].startswith("__portable")
+
+
+def test_hfd_progress_line_parsing():
+    from src.hfd_backend import _hfd_progress_messages, _normalize_hfd_output_line
+
+    raw = (
+        "\r\033[K\033[0;32m[ 14%]\033[0m  400/10755 files | "
+        "5.56G/39.9G | 10.7M/s | ETA 05:12"
+    )
+    line = _normalize_hfd_output_line(raw)
+    assert "14%" in line
+    msgs = _hfd_progress_messages(line)
+    assert any(m.startswith("[HF_META]\tfiles\t10755") for m in msgs)
+    assert any(m.startswith("[HF_META]\tdone_files\t400") for m in msgs)
+    assert any("hfd total" in m for m in msgs)
+
+    listed = _normalize_hfd_output_line("Listed 10755 files (49.6G)")
+    assert _hfd_progress_messages(listed) == ["[HF_META]\tfiles\t10755"]

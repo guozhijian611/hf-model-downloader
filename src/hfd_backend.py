@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -565,11 +566,14 @@ def download_with_hfd(
 
     assert proc.stdout is not None
     try:
-        for line in proc.stdout:
-            line = line.rstrip("\n")
+        for raw in proc.stdout:
+            # hfd uses \r + ANSI; normalize for UI/monitor parsing.
+            line = _normalize_hfd_output_line(raw)
             if not line:
                 continue
             if pipe:
+                for msg in _hfd_progress_messages(line):
+                    pipe.send(msg)
                 pipe.send(line)
             else:
                 print(line, flush=True)
@@ -594,3 +598,57 @@ def download_with_hfd(
     if pipe:
         pipe.send(f"hfd 下载完成：{repo_dir}")
     return repo_dir
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[mK]")
+# [ 14%]  400/10755 files | 5.56G/39.9G | 10.7M/s | ETA 05:12
+_HFD_PROGRESS_RE = re.compile(
+    r"\[\s*(?P<pct>\d+)%\]\s*"
+    r"(?P<dfiles>\d+)\s*/\s*(?P<tfiles>\d+)\s+files\s*\|"
+    r"\s*(?P<done>[\d.,]+\s*[kKmMgGtTpP]?i?B?)"
+    r"\s*/\s*"
+    r"(?P<total>[\d.,]+\s*[kKmMgGtTpP]?i?B?)"
+    r"(?:\s*\|\s*(?P<rate>[\d.,]+\s*[kKmMgGtTpP]?i?B?)\s*/s)?",
+    re.IGNORECASE,
+)
+_HFD_LISTED_RE = re.compile(
+    r"Listed\s+(?P<n>\d+)\s+files",
+    re.IGNORECASE,
+)
+
+
+def _normalize_hfd_output_line(raw: str) -> str:
+    """Strip CR/ANSI so progress lines become parseable single lines."""
+    if not raw:
+        return ""
+    text = raw.replace("\r", "\n")
+    parts = [p.strip() for p in text.split("\n") if p.strip()]
+    if not parts:
+        return ""
+    return _ANSI_RE.sub("", parts[-1]).strip()
+
+
+def _hfd_progress_messages(line: str) -> list[str]:
+    """Map hfd status lines to messages the monitor progress tracker understands."""
+    out: list[str] = []
+    m = _HFD_LISTED_RE.search(line)
+    if m:
+        out.append(f"[HF_META]\tfiles\t{m.group('n')}")
+        return out
+    m = _HFD_PROGRESS_RE.search(line)
+    if not m:
+        return out
+    pct = m.group("pct")
+    done = m.group("done").replace(" ", "")
+    total = m.group("total").replace(" ", "")
+    rate = (m.group("rate") or "").replace(" ", "")
+    dfiles = m.group("dfiles")
+    tfiles = m.group("tfiles")
+    out.append(f"[HF_META]\tfiles\t{tfiles}")
+    out.append(f"[HF_META]\tdone_files\t{dfiles}")
+    # tqdm-style overall line (same parser as hub incomplete total)
+    human = f"Downloading (hfd total...):  {pct}%| | {done}/{total}"
+    if rate:
+        human += f" [{rate}/s]"
+    out.append(human)
+    return out

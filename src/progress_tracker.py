@@ -240,6 +240,12 @@ class DownloadProgressTracker:
                     return True
                 except ValueError:
                     return False
+            if len(parts) >= 3 and parts[1] == "done_files":
+                try:
+                    self.completed_count = max(self.completed_count, int(parts[2]))
+                    return True
+                except ValueError:
+                    return False
 
         m_fetch = _RE_FETCHING.search(text)
         if m_fetch:
