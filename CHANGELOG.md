@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.8.1 (2026-07-29)
+
+### Chores
+
+- Sync app version metadata to 0.8.0
+  ([`f885af2`](https://github.com/guozhijian611/hf-model-downloader/commit/f885af2e6dfea18ac73440cc9cab2d09bc240bca))
+
+
 ## v0.8.0 (2026-07-29)
 
 ### Features
