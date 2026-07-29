@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.7.0 (2026-07-29)
+
+### Features
+
+- Rebrand repo, persist settings, proxy, and auto-retry downloads
+  ([`69de1c6`](https://github.com/guozhijian611/hf-model-downloader/commit/69de1c66054f551c803a5b05db01ae284d13b3fa))
+
+
 ## v0.6.2 (2026-07-07)
 
 ### Bug Fixes
