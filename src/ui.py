@@ -627,33 +627,53 @@ class MainWindow(QMainWindow):
 
     def _on_update_apply_ok(self, script_path: str):
         self.update_status("更新包已就绪，即将退出并替换程序...")
-        # Non-blocking info is easy to miss; use question so user explicitly confirms.
-        reply = QMessageBox.question(
-            self,
-            "准备安装更新",
-            (
-                "更新文件已下载并解压完成。\n\n"
-                "点击「Yes」后程序将退出，自动替换文件并重新启动。\n"
-                "请勿手动删除原安装目录。\n\n"
-                "是否现在安装并重启？"
-            ),
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
+        logger.info("Update package ready, script=%s", script_path)
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("准备安装更新")
+        box.setText(
+            "更新文件已下载并解压完成。\n\n"
+            "点击「立即安装并重启」后程序会退出，后台自动替换文件并重新启动。\n"
+            "请勿手动删除原安装目录。"
         )
-        if reply != QMessageBox.StandardButton.Yes:
+        install_btn = box.addButton("立即安装并重启", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(install_btn)
+        box.exec()
+        if box.clickedButton() is not install_btn:
             self.update_status("已取消自动安装（安装包仍在临时目录）。")
+            logger.info("User cancelled in-place update install")
             return
+
         try:
             launch_updater_and_exit(Path(script_path))
+            self.update_status("已启动更新程序，正在退出…")
+            logger.info("Updater launched, forcing application exit")
         except Exception as exc:
+            logger.exception("Failed to launch updater: %s", exc)
             QMessageBox.critical(
                 self,
                 "自动更新失败",
-                f"无法启动更新脚本：{exc}",
+                (
+                    f"无法启动更新脚本：\n{exc}\n\n"
+                    "可点击「打开日志」查看 runtime.log / update.log，"
+                    "或手动到 GitHub Releases 下载安装包覆盖。"
+                ),
             )
             return
-        # Quit so files can be overwritten.
-        QApplication.instance().quit()
+
+        # Ensure workers don't block quit; force-exit shortly after.
+        try:
+            if self.download_worker and self.download_worker.isRunning():
+                self.download_worker.cancel_download()
+        except Exception:
+            pass
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+        # Hard exit so Windows can overwrite the running onedir files.
+        QTimer.singleShot(300, lambda: os._exit(0))
 
     def _on_update_apply_failed(self, error_msg: str):
         self.update_status(f"自动更新失败：{error_msg}", error=True)

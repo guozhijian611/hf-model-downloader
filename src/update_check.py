@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import platform
 import shutil
 import stat
@@ -17,6 +19,8 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from .proxy_env import normalize_proxy, proxies_dict
 from .version import get_app_version, is_remote_newer, normalize_version
+
+logger = logging.getLogger(__name__)
 
 GITHUB_OWNER = "guozhijian611"
 GITHUB_REPO = "hf-model-downloader"
@@ -378,38 +382,86 @@ def _extract_dmg(dmg_path: Path, dest_dir: Path) -> Path:
         )
 
 
+def _windows_update_log_path() -> Path:
+    local = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    log_dir = Path(local) / "hf-model-downloader" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / "update.log"
+
+
 def _write_windows_updater(
     staging_dir: Path,
     install_root: Path,
     launch_target: Path,
+    app_pid: int | None = None,
 ) -> Path:
+    """Write a robust ASCII .bat that waits for the app PID, copies files, restarts."""
     script = Path(tempfile.gettempdir()) / "hf_model_downloader_update.bat"
-    # Use robocopy for robust directory copy into the install root.
-    robocopy = (
-        f'robocopy "{staging_dir}" "{install_root}" '
-        "/E /IS /IT /R:2 /W:1 /NFL /NDL /NJH /NJS /nc /ns /np"
-    )
-    content = "\n".join(
-        [
-            "@echo off",
-            "setlocal",
-            "echo Waiting for app to exit...",
-            "timeout /t 2 /nobreak >nul",
-            "echo Applying update...",
-            robocopy,
-            "set RC=%ERRORLEVEL%",
-            "if %RC% GEQ 8 (",
-            "  echo Update copy failed with code %RC%",
-            "  pause",
-            "  exit /b %RC%",
-            ")",
-            "echo Restarting...",
-            f'start "" "{launch_target}"',
-            'del "%~f0"',
-            "",
-        ]
-    )
-    script.write_text(content, encoding="utf-8")
+    log_path = _windows_update_log_path()
+    pid = app_pid or os.getpid()
+
+    # Keep the bat pure ASCII (cmd.exe default code page is often not UTF-8).
+    staging = str(staging_dir)
+    install = str(install_root)
+    launch = str(launch_target)
+    log = str(log_path)
+
+    lines = [
+        "@echo off",
+        "setlocal EnableExtensions",
+        f'set "LOG={log}"',
+        f'set "STAGING={staging}"',
+        f'set "INSTALL={install}"',
+        f'set "LAUNCH={launch}"',
+        f"set APP_PID={pid}",
+        'echo ==== update start %DATE% %TIME% ====>>"%LOG%"',
+        'echo STAGING=%STAGING%>>"%LOG%"',
+        'echo INSTALL=%INSTALL%>>"%LOG%"',
+        'echo LAUNCH=%LAUNCH%>>"%LOG%"',
+        'echo APP_PID=%APP_PID%>>"%LOG%"',
+        "echo Waiting for app PID %APP_PID% to exit...",
+        'echo Waiting for PID %APP_PID%>>"%LOG%"',
+        ":wait_loop",
+        'tasklist /FI "PID eq %APP_PID%" 2>NUL | findstr /I "%APP_PID%" >NUL',
+        "if not errorlevel 1 (",
+        "  timeout /t 1 /nobreak >NUL",
+        "  goto wait_loop",
+        ")",
+        "timeout /t 1 /nobreak >NUL",
+        'echo App exited, copying files...>>"%LOG%"',
+        "echo Applying update files...",
+        # /E copy subdirs; /IS /IT include same/tweaked; retries help with locks
+        (
+            'robocopy "%STAGING%" "%INSTALL%" /E /IS /IT /R:5 /W:2 '
+            '/NFL /NDL /NJH /NJS /nc /ns /np >>"%LOG%" 2>&1'
+        ),
+        "set RC=%ERRORLEVEL%",
+        'echo robocopy exit=%RC%>>"%LOG%"',
+        # robocopy: 0-7 success-ish, >=8 failure
+        "if %RC% GEQ 8 (",
+        '  echo COPY FAILED rc=%RC%>>"%LOG%"',
+        "  echo Update copy failed with code %RC%",
+        "  echo See log: %LOG%",
+        "  pause",
+        "  exit /b %RC%",
+        ")",
+        'echo Restarting app...>>"%LOG%"',
+        'if not exist "%LAUNCH%" (',
+        '  echo Launch target missing: %LAUNCH%>>"%LOG%"',
+        "  echo Launch target not found:",
+        "  echo %LAUNCH%",
+        "  pause",
+        "  exit /b 2",
+        ")",
+        'start "" "%LAUNCH%"',
+        'echo started ok>>"%LOG%"',
+        "endlocal",
+        'del "%~f0" >NUL 2>&1',
+        "exit /b 0",
+        "",
+    ]
+    # Write as ANSI/UTF-8 without requiring Chinese — ASCII only content.
+    script.write_text("\r\n".join(lines), encoding="utf-8")
     return script
 
 
@@ -505,7 +557,21 @@ def apply_update_package(
 
     system = platform.system().lower()
     if system.startswith("win"):
-        return _write_windows_updater(copy_source, target_root, final_launch)
+        script = _write_windows_updater(
+            copy_source,
+            target_root,
+            final_launch,
+            app_pid=os.getpid(),
+        )
+        logger.info(
+            "Windows updater ready script=%s staging=%s install=%s launch=%s pid=%s",
+            script,
+            copy_source,
+            target_root,
+            final_launch,
+            os.getpid(),
+        )
+        return script
     return _write_posix_updater(copy_source, target_root, final_launch)
 
 
@@ -538,22 +604,40 @@ def download_and_prepare_update(
 
 
 def launch_updater_and_exit(script_path: Path) -> None:
-    """Start the updater script in a detached process."""
+    """Start the updater script in a detached process (caller should then exit)."""
+    script_path = Path(script_path).resolve()
+    if not script_path.is_file():
+        raise FileNotFoundError(f"更新脚本不存在：{script_path}")
+
     system = platform.system().lower()
+    logger.info("Launching updater script: %s", script_path)
+
     if system.startswith("win"):
-        # Detach from current process
+        # DETACHED_PROCESS + cmd /c is unreliable. Use `start` so the updater
+        # outlives this process even after we force-exit.
+        create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        # start "" "path\to\script.bat"
+        cmd = f'start "hf-update" /min cmd.exe /c ""{script_path}""'
         subprocess.Popen(
-            ["cmd", "/c", str(script_path)],
-            close_fds=True,
-            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-            | getattr(subprocess, "DETACHED_PROCESS", 0),
+            cmd,
+            shell=True,
+            cwd=str(script_path.parent),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=create_no_window,
+            close_fds=False,
         )
     else:
         subprocess.Popen(
             ["/bin/bash", str(script_path)],
             start_new_session=True,
             close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
+    logger.info("Updater process spawned")
 
 
 class UpdateCheckWorker(QThread):
