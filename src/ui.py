@@ -2,10 +2,12 @@ import logging
 import os
 import platform
 import re
+import subprocess
+import threading
 import time
 from pathlib import Path
 
-from PyQt6.QtCore import QSize, Qt, QTimer, QUrl
+from PyQt6.QtCore import QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QDesktopServices, QIcon
 from PyQt6.QtWidgets import (
     QApplication,
@@ -60,6 +62,9 @@ logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
+    # Background stall-hook command finished (msg, is_error)
+    stall_hook_finished = pyqtSignal(str, bool)
+
     def __init__(self):
         super().__init__()
         self.app_version = get_app_version()
@@ -322,6 +327,7 @@ class MainWindow(QMainWindow):
         self.stall_restart_checkbox.setChecked(True)
         self.stall_restart_checkbox.setToolTip(
             "下载过程中若长时间没有进度日志/速度，自动停止并重新开始（断点续传）。"
+            "可同时配置下方「卡住时执行」命令（例如重启 v2ray 内核）。"
         )
         stall_timeout_label = QLabel("超时(秒):")
         self.stall_timeout_spin = QSpinBox()
@@ -335,6 +341,32 @@ class MainWindow(QMainWindow):
         retry_layout.addWidget(self.stall_timeout_spin)
         retry_layout.addStretch()
         layout.addLayout(retry_layout)
+
+        stall_cmd_layout = QHBoxLayout()
+        stall_cmd_label = QLabel("卡住时执行:")
+        stall_cmd_label.setToolTip(
+            "检测到卡住并自动重启前，在后台执行的系统命令/脚本。\n"
+            "常用于重启卡死的代理内核（v2ray/xray 等）。\n"
+            "留空则只重启下载，不跑额外命令。"
+        )
+        self.stall_cmd_input = QLineEdit()
+        self.stall_cmd_input.setPlaceholderText(
+            "可选：卡住时执行的命令，如 killall xray 或 taskkill /F /IM xray.exe"
+        )
+        self.stall_cmd_input.setToolTip(
+            "shell 命令（macOS/Linux 走 sh，Windows 走 cmd）。\n"
+            "示例：\n"
+            "  macOS: killall xray; sleep 2; open -a v2rayN\n"
+            '  Windows: taskkill /F /IM xray.exe & timeout /t 2 & start "" '
+            '"C:\\Path\\to\\v2rayN.exe"\n'
+            "  或直接写脚本路径：/path/to/restart-proxy.sh\n"
+            "命令在后台执行，不阻塞界面；完成后日志会提示结果。"
+        )
+        self.stall_restart_checkbox.toggled.connect(self._on_stall_restart_toggled)
+        self._on_stall_restart_toggled(self.stall_restart_checkbox.isChecked())
+        stall_cmd_layout.addWidget(stall_cmd_label)
+        stall_cmd_layout.addWidget(self.stall_cmd_input)
+        layout.addLayout(stall_cmd_layout)
 
         concurrency_layout = QHBoxLayout()
         concurrency_layout.addWidget(QLabel("并发:"))
@@ -438,9 +470,11 @@ class MainWindow(QMainWindow):
         self._last_download_activity = 0.0
         self._download_watch_started = 0.0
         self._pending_stall_restart = False
+        self._stall_hook_thread: threading.Thread | None = None
         self._stall_watch_timer = QTimer(self)
         self._stall_watch_timer.setInterval(5000)
         self._stall_watch_timer.timeout.connect(self._check_download_stall)
+        self.stall_hook_finished.connect(self._on_stall_hook_finished)
         self._load_settings()
 
     def _set_dynamic_minimum_height(self):
@@ -510,6 +544,8 @@ class MainWindow(QMainWindow):
         self.stall_restart_checkbox.setChecked(bool(data.get("stall_restart", True)))
         stall_sec = int(data.get("stall_timeout_sec") or 120)
         self.stall_timeout_spin.setValue(max(30, min(600, stall_sec)))
+        self.stall_cmd_input.setText(str(data.get("stall_restart_command") or ""))
+        self._on_stall_restart_toggled(self.stall_restart_checkbox.isChecked())
         self.hub_workers_spin.setValue(
             max(1, min(32, int(data.get("hub_max_workers") or 8)))
         )
@@ -595,6 +631,7 @@ class MainWindow(QMainWindow):
             download_backend=self._current_backend(),
             stall_restart=self.stall_restart_checkbox.isChecked(),
             stall_timeout_sec=self.stall_timeout_spin.value(),
+            stall_restart_command=self.stall_cmd_input.text().strip(),
             hub_max_workers=self.hub_workers_spin.value(),
             hfd_threads=self.hfd_threads_spin.value(),
             hfd_jobs=self.hfd_jobs_spin.value(),
@@ -1144,6 +1181,8 @@ class MainWindow(QMainWindow):
             f"⚠️ 已 {int(idle)} 秒无进度，判定卡住，自动停止并重新开始…",
             error=True,
         )
+        # Run associated command first (e.g. restart frozen v2ray core).
+        self._run_stall_hook_command()
         try:
             self.download_worker.cancel_download()
         except Exception as exc:
@@ -1152,6 +1191,72 @@ class MainWindow(QMainWindow):
             return
         # cancel() may invalidate signals so error might not fire — poll until stop.
         QTimer.singleShot(800, self._after_stall_cancel)
+
+    def _on_stall_restart_toggled(self, enabled: bool) -> None:
+        self.stall_timeout_spin.setEnabled(enabled)
+        self.stall_cmd_input.setEnabled(enabled)
+
+    def _run_stall_hook_command(self) -> None:
+        """Fire the user-configured stall hook in a background thread."""
+        cmd = self.stall_cmd_input.text().strip()
+        if not cmd:
+            return
+        if self._stall_hook_thread and self._stall_hook_thread.is_alive():
+            logger.warning("Previous stall hook still running; skip new run")
+            self.update_status("⚠️ 上一次卡住关联命令仍在执行，跳过本次")
+            return
+
+        self.update_status(f"🔧 执行卡住关联命令：{cmd}")
+        logger.info("Starting stall hook command: %s", cmd)
+
+        def worker() -> None:
+            try:
+                # shell=True so users can write pipelines / compound commands.
+                run_kwargs: dict = {
+                    "shell": True,
+                    "capture_output": True,
+                    "text": True,
+                    "timeout": 120,
+                }
+                if platform.system().lower() == "windows":
+                    run_kwargs["creationflags"] = getattr(
+                        subprocess, "CREATE_NO_WINDOW", 0
+                    )
+                completed = subprocess.run(cmd, **run_kwargs)
+                out = (completed.stdout or "").strip()
+                err = (completed.stderr or "").strip()
+                detail_parts = []
+                if out:
+                    detail_parts.append(out[:400])
+                if err:
+                    detail_parts.append(err[:400])
+                detail = " | ".join(detail_parts)
+                if completed.returncode == 0:
+                    msg = "卡住关联命令已完成"
+                    if detail:
+                        msg = f"{msg}：{detail}"
+                    self.stall_hook_finished.emit(msg, False)
+                else:
+                    msg = f"卡住关联命令退出码 {completed.returncode}"
+                    if detail:
+                        msg = f"{msg}：{detail}"
+                    self.stall_hook_finished.emit(msg, True)
+            except subprocess.TimeoutExpired:
+                self.stall_hook_finished.emit(
+                    "卡住关联命令超时（120 秒），已放弃等待", True
+                )
+            except Exception as exc:
+                logger.exception("Stall hook command failed: %s", exc)
+                self.stall_hook_finished.emit(f"卡住关联命令执行失败：{exc}", True)
+
+        self._stall_hook_thread = threading.Thread(
+            target=worker, name="stall-hook", daemon=True
+        )
+        self._stall_hook_thread.start()
+
+    def _on_stall_hook_finished(self, message: str, is_error: bool) -> None:
+        logger.info("Stall hook finished: error=%s msg=%s", is_error, message)
+        self.update_status(message, error=is_error)
 
     def _after_stall_cancel(self) -> None:
         if self._user_stopped:
@@ -1165,14 +1270,20 @@ class MainWindow(QMainWindow):
         self._pending_stall_restart = False
         self.download_worker = None
         self._schedule_stall_or_error_restart(
-            "因卡住无进度已中断，准备重新开始（断点续传）"
+            "因卡住无进度已中断，准备重新开始（断点续传）",
+            from_stall=True,
         )
 
-    def _schedule_stall_or_error_restart(self, reason: str) -> None:
+    def _schedule_stall_or_error_restart(
+        self, reason: str, *, from_stall: bool = False
+    ) -> None:
         """Shared path for stall restart (and reuses retry delay)."""
         self._stall_watch_timer.stop()
         self._retry_attempt += 1
         delay = self._retry_delay_seconds(self._retry_attempt)
+        # Give proxy restart a little more room when a hook command is configured.
+        if from_stall and self.stall_cmd_input.text().strip():
+            delay = max(delay, 15)
         self._set_downloading_ui(True)
         self.update_status(reason, error=True)
         self.update_status(
@@ -1242,7 +1353,10 @@ class MainWindow(QMainWindow):
         # Stall watchdog forced a cancel → restart, not user stop.
         if self._pending_stall_restart and not self._user_stopped:
             self._pending_stall_restart = False
-            self._schedule_stall_or_error_restart(f"因卡住无进度已中断：{error_msg}")
+            self._schedule_stall_or_error_restart(
+                f"因卡住无进度已中断：{error_msg}",
+                from_stall=True,
+            )
             return
 
         if is_cancel:
