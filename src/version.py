@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 # Last-resort fallback when no other version source is available.
-FALLBACK_VERSION = "0.10.3"
+FALLBACK_VERSION = "0.13.0"
 
 
 def _read_version_data_module() -> str | None:

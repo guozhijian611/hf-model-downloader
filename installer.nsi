@@ -4,7 +4,7 @@
 !define DESCRIPTION "A cross-platform GUI application for downloading Hugging Face models"
 ; These three must be integers
 !define VERSIONMAJOR 0
-!define VERSIONMINOR 8
+!define VERSIONMINOR 13
 !define VERSIONBUILD 0
 ; These will be displayed by the "Click here for support information" link in "Add/Remove Programs"
 ; It is possible to use "mailto:" links in here to open the email client
