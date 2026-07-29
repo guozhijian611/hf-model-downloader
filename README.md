@@ -3,6 +3,10 @@
 <div align="center">
   <img src="./assets/icon.png" alt="hf-model-downloader logo" width="200" />
   <br />
+
+  <p>
+    <strong>English</strong> | <a href="./README.zh-CN.md">简体中文</a>
+  </p>
   
   <div id="download-section" style="margin: 20px 0;">
     <a href="#" onclick="downloadLatest(); return false;" style="text-decoration: none;">
