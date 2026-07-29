@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.15.0 (2026-07-29)
+
+### Features
+
+- Run optional shell command when download stall restarts
+  ([`0e6ebfa`](https://github.com/guozhijian611/hf-model-downloader/commit/0e6ebfa0f28f2fb1c3aee0046b9fac8a8fe5633d))
+
+
 ## v0.14.0 (2026-07-29)
 
 ### Features
