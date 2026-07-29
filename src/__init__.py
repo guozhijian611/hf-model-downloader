@@ -2,4 +2,6 @@
 Model Downloader package
 """
 
-__version__ = "0.1.0"
+from .version import get_app_version
+
+__version__ = get_app_version()

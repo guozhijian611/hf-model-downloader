@@ -13,8 +13,9 @@ from PyQt6.QtWidgets import QApplication
 
 from src.resource_utils import get_asset_path
 from src.ui import MainWindow
+from src.version import get_app_version
 
-__version__ = "1.0.0"
+__version__ = get_app_version()
 
 # Configuration constants
 MULTIPROCESSING_START_METHOD = "spawn"

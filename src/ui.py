@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QPushButton,
     QTextEdit,
     QVBoxLayout,
@@ -24,6 +25,8 @@ from .hf_hub_env import resolve_hf_endpoint
 from .proxy_env import normalize_proxy
 from .resource_utils import get_asset_path
 from .unified_downloader import UnifiedDownloadWorker
+from .update_check import UpdateCheckResult, UpdateCheckWorker
+from .version import get_app_version
 
 GITHUB_REPO_URL = "https://github.com/guozhijian611/hf-model-downloader"
 AUTHOR_NAME = "guozhijian611"
@@ -33,7 +36,8 @@ AUTHOR_GITHUB_URL = "https://github.com/guozhijian611"
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("HF Model Downloader")
+        self.app_version = get_app_version()
+        self.setWindowTitle(f"HF Model Downloader v{self.app_version}")
 
         # Set window icon based on platform
         system = platform.system().lower()
@@ -153,10 +157,16 @@ class MainWindow(QMainWindow):
         self.get_token_btn.setMaximumWidth(150)
         self.get_token_btn.setFixedHeight(standard_button_height)
         self.get_token_btn.clicked.connect(self.open_token_page)
+        self.check_update_btn = QPushButton("🔄 检查更新")
+        self.check_update_btn.setMaximumWidth(150)
+        self.check_update_btn.setFixedHeight(standard_button_height)
+        self.check_update_btn.setToolTip("从 GitHub Releases 检查是否有新版本")
+        self.check_update_btn.clicked.connect(self.check_for_updates)
 
         links_layout.addWidget(self.browse_models_btn)
         links_layout.addWidget(self.browse_datasets_btn)
         links_layout.addWidget(self.get_token_btn)
+        links_layout.addWidget(self.check_update_btn)
         links_layout.addStretch()
 
         guide_content_layout.addLayout(links_layout)
@@ -267,6 +277,10 @@ class MainWindow(QMainWindow):
         footer_frame = QFrame()
         footer_layout = QHBoxLayout(footer_frame)
 
+        version_label = QLabel(f"v{self.app_version}")
+        version_label.setStyleSheet("font-size: 12px; color: #666;")
+        footer_layout.addWidget(version_label)
+
         footer_layout.addStretch()
 
         github_btn = QPushButton("在 GitHub 查看")
@@ -300,6 +314,7 @@ class MainWindow(QMainWindow):
         self._set_dynamic_minimum_height()
 
         self.download_worker = None
+        self._update_worker = None
         self._user_stopped = False
         self._retry_attempt = 0
         self._download_params = None
@@ -392,6 +407,8 @@ class MainWindow(QMainWindow):
         self._save_settings()
         self._user_stopped = True
         self._retry_timer.stop()
+        if self._update_worker and self._update_worker.isRunning():
+            self._update_worker.wait(3000)
         if self.download_worker and self.download_worker.isRunning():
             self.download_worker.finished.disconnect()
             self.download_worker.error.disconnect()
@@ -439,6 +456,62 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl("https://modelscope.cn/my/myaccesstoken"))
         else:
             QDesktopServices.openUrl(QUrl("https://huggingface.co/settings/tokens"))
+
+    def _current_proxy_for_network(self) -> str | None:
+        if self.proxy_enabled.isChecked():
+            return normalize_proxy(self.proxy_input.text())
+        return None
+
+    def check_for_updates(self):
+        """Check GitHub Releases for a newer app version (async)."""
+        if self._update_worker and self._update_worker.isRunning():
+            self.update_status("正在检查更新，请稍候...")
+            return
+
+        proxy = self._current_proxy_for_network()
+        self.check_update_btn.setEnabled(False)
+        self.update_status(
+            f"正在检查更新（当前 v{self.app_version}"
+            + (f"，代理 {proxy}" if proxy else "")
+            + "）..."
+        )
+
+        self._update_worker = UpdateCheckWorker(proxy=proxy, parent=self)
+        self._update_worker.finished_result.connect(self._on_update_check_finished)
+        self._update_worker.finished.connect(self._on_update_worker_done)
+        self._update_worker.start()
+
+    def _on_update_worker_done(self):
+        self.check_update_btn.setEnabled(True)
+        if self._update_worker:
+            self._update_worker.deleteLater()
+            self._update_worker = None
+
+    def _on_update_check_finished(self, result: UpdateCheckResult):
+        self.update_status(result.message)
+
+        if result.error:
+            QMessageBox.warning(self, "检查更新", result.message)
+            return
+
+        if result.update_available:
+            reply = QMessageBox.question(
+                self,
+                "发现新版本",
+                (
+                    f"{result.message}\n\n"
+                    f"最新版本：v{result.latest_version}\n"
+                    f"当前版本：v{result.current_version}\n\n"
+                    "是否打开下载页面？"
+                ),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                QDesktopServices.openUrl(QUrl(result.release_url))
+            return
+
+        QMessageBox.information(self, "检查更新", result.message)
 
     def on_type_changed(self, type_text):
         if type_text == "Dataset":
