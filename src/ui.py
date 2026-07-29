@@ -42,6 +42,7 @@ from .hfd_backend import (
     BACKEND_HUB,
     hfd_availability,
 )
+from .net_monitor_panel import NetMonitorPanel
 from .proxy_env import normalize_proxy
 from .resource_utils import get_asset_path
 from .unified_downloader import UnifiedDownloadWorker
@@ -423,6 +424,10 @@ class MainWindow(QMainWindow):
         button_layout.addWidget(self.stop_button)
         layout.addLayout(button_layout)
 
+        self.net_monitor_panel = NetMonitorPanel()
+        self.net_monitor_panel.prefs_changed.connect(self._save_settings)
+        layout.addWidget(self.net_monitor_panel)
+
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setMinimumHeight(100)
@@ -493,6 +498,7 @@ class MainWindow(QMainWindow):
         help_section_height = 220
         form_fields_height = 270
         buttons_height = 40
+        net_monitor_height = 220
         log_minimum_height = 100
         footer_height = 40
         margins_spacing = 40
@@ -502,13 +508,14 @@ class MainWindow(QMainWindow):
             + help_section_height
             + form_fields_height
             + buttons_height
+            + net_monitor_height
             + log_minimum_height
             + footer_height
             + margins_spacing
         )
 
         self.setMinimumHeight(total_height)
-        self.setMinimumWidth(800)
+        self.setMinimumWidth(860)
 
     def _load_settings(self):
         """Restore last-used form values."""
@@ -574,6 +581,15 @@ class MainWindow(QMainWindow):
             idx = 0
         self.backend_combo.setCurrentIndex(idx)
         self._refresh_backend_status()
+
+        hist = int(data.get("net_monitor_history_sec") or 180)
+        self.net_monitor_panel.set_history_seconds(max(60, min(600, hist)))
+        self.net_monitor_panel.set_selected_interface(
+            str(data.get("net_monitor_iface") or "")
+        )
+        self.net_monitor_panel.set_expanded(
+            bool(data.get("net_monitor_expanded", True))
+        )
 
     def _platform_key(self) -> str:
         return (
@@ -650,6 +666,9 @@ class MainWindow(QMainWindow):
             hub_max_workers=self.hub_workers_spin.value(),
             hfd_threads=self.hfd_threads_spin.value(),
             hfd_jobs=self.hfd_jobs_spin.value(),
+            net_monitor_expanded=self.net_monitor_panel.is_expanded(),
+            net_monitor_iface=self.net_monitor_panel.selected_interface(),
+            net_monitor_history_sec=self.net_monitor_panel.history_seconds(),
         )
 
     def closeEvent(self, event):
@@ -658,6 +677,10 @@ class MainWindow(QMainWindow):
         self._pending_stall_restart = False
         self._retry_timer.stop()
         self._stall_watch_timer.stop()
+        try:
+            self.net_monitor_panel.stop()
+        except Exception:
+            pass
         if self._update_worker and self._update_worker.isRunning():
             self._update_worker.wait(3000)
         if self.download_worker and self.download_worker.isRunning():

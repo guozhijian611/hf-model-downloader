@@ -26,6 +26,9 @@ KEY_STALL_RESTART_CMD = "stall_restart_command"
 KEY_HUB_MAX_WORKERS = "hub_max_workers"
 KEY_HFD_THREADS = "hfd_threads"
 KEY_HFD_JOBS = "hfd_jobs"
+KEY_NET_MONITOR_EXPANDED = "net_monitor_expanded"
+KEY_NET_MONITOR_IFACE = "net_monitor_iface"
+KEY_NET_MONITOR_HISTORY = "net_monitor_history_sec"
 
 
 def get_settings() -> QSettings:
@@ -56,6 +59,9 @@ def load_form_settings() -> dict:
         KEY_HUB_MAX_WORKERS: s.value(KEY_HUB_MAX_WORKERS, 8, type=int),
         KEY_HFD_THREADS: s.value(KEY_HFD_THREADS, 8, type=int),
         KEY_HFD_JOBS: s.value(KEY_HFD_JOBS, 5, type=int),
+        KEY_NET_MONITOR_EXPANDED: s.value(KEY_NET_MONITOR_EXPANDED, True, type=bool),
+        KEY_NET_MONITOR_IFACE: s.value(KEY_NET_MONITOR_IFACE, "", type=str),
+        KEY_NET_MONITOR_HISTORY: s.value(KEY_NET_MONITOR_HISTORY, 180, type=int),
     }
 
 
@@ -79,6 +85,9 @@ def save_form_settings(
     hub_max_workers: int = 8,
     hfd_threads: int = 8,
     hfd_jobs: int = 5,
+    net_monitor_expanded: bool = True,
+    net_monitor_iface: str = "",
+    net_monitor_history_sec: int = 180,
 ) -> None:
     s = get_settings()
     s.setValue(KEY_PLATFORM, platform)
@@ -99,4 +108,7 @@ def save_form_settings(
     s.setValue(KEY_HUB_MAX_WORKERS, int(hub_max_workers))
     s.setValue(KEY_HFD_THREADS, int(hfd_threads))
     s.setValue(KEY_HFD_JOBS, int(hfd_jobs))
+    s.setValue(KEY_NET_MONITOR_EXPANDED, bool(net_monitor_expanded))
+    s.setValue(KEY_NET_MONITOR_IFACE, net_monitor_iface or "")
+    s.setValue(KEY_NET_MONITOR_HISTORY, int(net_monitor_history_sec))
     s.sync()
