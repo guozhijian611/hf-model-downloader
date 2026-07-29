@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.13.1 (2026-07-29)
+
+### Chores
+
+- Sync embedded version metadata to v0.13.0
+  ([`b0b29a2`](https://github.com/guozhijian611/hf-model-downloader/commit/b0b29a22c6a5d9073e71ac97211aa1aca21f40c8))
+
+
 ## v0.13.0 (2026-07-29)
 
 ### Features
