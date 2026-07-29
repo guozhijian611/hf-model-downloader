@@ -38,6 +38,34 @@ DEFAULT_TIMEOUT = (10, 20)
 DOWNLOAD_TIMEOUT = (15, 60)
 
 
+def _http_get(
+    url: str,
+    *,
+    proxy: str | None = None,
+    timeout=DEFAULT_TIMEOUT,
+    headers: dict | None = None,
+    stream: bool = False,
+):
+    """GET with optional proxy.
+
+    ``trust_env`` must be set on Session (not passed to get()) — passing it to
+    ``requests.get`` raises TypeError on modern requests and silently kills the
+    update-check worker thread.
+    """
+    proxy = normalize_proxy(proxy)
+    session = requests.Session()
+    # Only honor system HTTP(S)_PROXY when the user explicitly set an app proxy.
+    # Otherwise a broken env proxy can hang/fail GitHub checks with no UI feedback.
+    session.trust_env = bool(proxy)
+    return session.get(
+        url,
+        headers=headers or {},
+        timeout=timeout,
+        proxies=proxies_dict(proxy),
+        stream=stream,
+    )
+
+
 @dataclass(frozen=True)
 class ReleaseAsset:
     name: str
@@ -132,15 +160,6 @@ def check_for_update(
         "User-Agent": f"hf-model-downloader/{current}",
     }
 
-    # Avoid inheriting broken system SOCKS env when app proxy is off.
-    # When an explicit proxy is set, pass it; otherwise disable env trust unless
-    # we only want direct GitHub access from the app.
-    req_kwargs: dict = {
-        "headers": headers,
-        "timeout": timeout,
-        "proxies": proxies_dict(proxy),
-        "trust_env": bool(proxy),
-    }
     if proxy and is_socks_proxy(proxy) and not socks_support_available():
         return UpdateCheckResult(
             current_version=current,
@@ -156,7 +175,12 @@ def check_for_update(
         )
 
     try:
-        response = requests.get(LATEST_RELEASE_API, **req_kwargs)
+        response = _http_get(
+            LATEST_RELEASE_API,
+            proxy=proxy,
+            timeout=timeout,
+            headers=headers,
+        )
         if response.status_code == 404:
             return UpdateCheckResult(
                 current_version=current,
@@ -205,6 +229,17 @@ def check_for_update(
             release_name=None,
             update_available=False,
             message=f"解析更新信息失败：{exc}",
+            error=str(exc),
+        )
+    except Exception as exc:
+        logger.exception("Unexpected error during update check")
+        return UpdateCheckResult(
+            current_version=current,
+            latest_version=None,
+            release_url=RELEASES_PAGE_URL,
+            release_name=None,
+            update_available=False,
+            message=f"检查更新失败：{exc}",
             error=str(exc),
         )
 
@@ -324,13 +359,12 @@ def download_file(
     progress_cb=None,
 ) -> None:
     headers = {"User-Agent": f"hf-model-downloader/{get_app_version()}"}
-    with requests.get(
+    with _http_get(
         url,
+        proxy=proxy,
+        timeout=timeout,
         headers=headers,
         stream=True,
-        timeout=timeout,
-        proxies=proxies_dict(proxy),
-        trust_env=bool(proxy),
     ) as response:
         response.raise_for_status()
         total = int(response.headers.get("Content-Length") or 0)
@@ -681,7 +715,20 @@ class UpdateCheckWorker(QThread):
         self.proxy = proxy
 
     def run(self):
-        result = check_for_update(proxy=self.proxy)
+        try:
+            result = check_for_update(proxy=self.proxy)
+        except Exception as exc:
+            logger.exception("UpdateCheckWorker crashed")
+            current = normalize_version(get_app_version())
+            result = UpdateCheckResult(
+                current_version=current,
+                latest_version=None,
+                release_url=RELEASES_PAGE_URL,
+                release_name=None,
+                update_available=False,
+                message=f"检查更新失败：{exc}",
+                error=str(exc),
+            )
         self.finished_result.emit(result)
 
 

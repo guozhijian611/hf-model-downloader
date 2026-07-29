@@ -39,7 +39,7 @@ def test_pick_release_asset_exact_match():
 
 
 @patch("src.update_check.get_app_version", return_value="0.8.0")
-@patch("src.update_check.requests.get")
+@patch("src.update_check._http_get")
 def test_check_for_update_finds_newer_release_with_asset(mock_get, _mock_version):
     response = MagicMock()
     response.status_code = 200
@@ -71,7 +71,7 @@ def test_check_for_update_finds_newer_release_with_asset(mock_get, _mock_version
 
 
 @patch("src.update_check.get_app_version", return_value="0.8.2")
-@patch("src.update_check.requests.get")
+@patch("src.update_check._http_get")
 def test_check_for_update_already_latest(mock_get, _mock_version):
     response = MagicMock()
     response.status_code = 200
@@ -90,7 +90,7 @@ def test_check_for_update_already_latest(mock_get, _mock_version):
 
 
 @patch("src.update_check.get_app_version", return_value="0.8.0")
-@patch("src.update_check.requests.get")
+@patch("src.update_check._http_get")
 def test_check_for_update_network_error(mock_get, _mock_version):
     import requests
 
