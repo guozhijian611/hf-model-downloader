@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.26.3 (2026-07-30)
+
+### Bug Fixes
+
+- **hfd**: Skip slow tree walk when metadata siblings list exists
+  ([`d4c04e4`](https://github.com/guozhijian611/hf-model-downloader/commit/d4c04e40866ebb10267efed077d6ab5b0bf2ef5c))
+
+
 ## v0.26.2 (2026-07-30)
 
 ### Bug Fixes
