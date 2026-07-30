@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .download_progress_panel import DownloadProgressPanel
+from .hfd_error_log_panel import HfdErrorLogPanel
 from .net_monitor_panel import NetMonitorPanel
 from .progress_tracker import DownloadProgressTracker
 
@@ -112,32 +113,56 @@ class MonitorWindow(QMainWindow):
         self.file_panel.prefs_changed.connect(self.prefs_changed.emit)
         root.addWidget(self.file_panel, stretch=1)
 
+        # aria2/hfd download.log live tail (403 / SSL live view)
+        self.hfd_log_panel = HfdErrorLogPanel()
+        self.hfd_log_panel.set_expanded(True)
+        self.hfd_log_panel.prefs_changed.connect(self.prefs_changed.emit)
+        root.addWidget(self.hfd_log_panel)
+
         # Dir scan: infrequent + background thread
         self._scan_timer = QTimer(self)
         self._scan_timer.setInterval(5000)
         self._scan_timer.timeout.connect(self._request_scan)
         self._watch_dir: str | None = None
+        self._repo_dir: str | None = None
         self._scan_active = False
         self._scan_thread: _DirScanThread | None = None
         self._scan_busy = False
 
+        self.setMinimumSize(400, 620)
+        self.resize(460, 720)
+
     def set_watch_path(self, path: str | None) -> None:
+        """Save root or repo directory for net/file monitors."""
         self._watch_dir = (path or "").strip() or None
         self.net_panel.set_watch_path(path)
         self.file_panel.set_scan_root(self._watch_dir)
+
+    def set_repo_dir(self, path: str | None) -> None:
+        """Dataset/model folder that contains ``.hfd/download.log``."""
+        self._repo_dir = (path or "").strip() or None
+        # Prefer explicit repo dir; fall back to watch path.
+        self.hfd_log_panel.set_watch_path(self._repo_dir or self._watch_dir)
 
     def start_session(self, *, reset: bool = True) -> None:
         if reset:
             self.file_panel.reset()
             self.net_panel.mark_download_session()
+            self.hfd_log_panel.clear_display()
         self._scan_active = True
         if not self._scan_timer.isActive():
             self._scan_timer.start()
         # First scan after a short delay — never block download start
         QTimer.singleShot(1500, self._request_scan)
+        # Live-tail aria2 log from current end (huge historical logs stay off-screen).
+        self.hfd_log_panel.set_watch_path(self._repo_dir or self._watch_dir)
+        self.hfd_log_panel.start(from_end=True)
 
     def stop_session(self) -> None:
         self._scan_active = False
+        # Keep tailing briefly so final errors still appear; user can clear later.
+        # Stop only when monitor fully stops.
+        # self.hfd_log_panel.stop()
 
     def feed_log(self, message: str) -> None:
         self.file_panel.feed_log(message)
@@ -148,6 +173,7 @@ class MonitorWindow(QMainWindow):
         if self._scan_thread and self._scan_thread.isRunning():
             self._scan_thread.wait(500)
         self.net_panel.stop()
+        self.hfd_log_panel.stop()
 
     def place_right_of_parent(self) -> None:
         parent = self.parent()

@@ -1263,8 +1263,15 @@ class MainWindow(QMainWindow):
         def _prep_monitor() -> None:
             try:
                 save_path = params.get("save_path")
-                repo_id = params.get("repo_id")
+                repo_id = params.get("repo_id") or ""
+                repo_name = repo_id.split("/")[-1] if repo_id else ""
+                repo_dir = (
+                    os.path.join(save_path, repo_name)
+                    if save_path and repo_name
+                    else save_path
+                )
                 self._monitor_window.set_watch_path(save_path)
+                self._monitor_window.set_repo_dir(repo_dir)
                 self._monitor_window.file_panel.set_scan_root(
                     save_path, repo_id=repo_id
                 )
