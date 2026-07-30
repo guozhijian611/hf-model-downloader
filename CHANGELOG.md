@@ -2,6 +2,19 @@
 
 <!-- version list -->
 
+## v0.26.0 (2026-07-30)
+
+### Chores
+
+- Log when repo type validation is skipped
+  ([`0bb7ebd`](https://github.com/guozhijian611/hf-model-downloader/commit/0bb7ebda4430bde3cd3c19dd8a142f5f3d2bb347))
+
+### Features
+
+- Add switch to skip Hugging Face repo type validation
+  ([`ec23aa6`](https://github.com/guozhijian611/hf-model-downloader/commit/ec23aa6f71be36820fd156425a56ab8adac78c21))
+
+
 ## v0.25.0 (2026-07-30)
 
 ### Features
