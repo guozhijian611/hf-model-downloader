@@ -43,6 +43,7 @@ from .hfd_backend import (
     can_auto_install_hfd_deps,
     hfd_availability,
     missing_hfd_deps,
+    missing_hfd_required_deps,
     run_hfd_deps_install,
 )
 from .monitor_window import MonitorWindow
@@ -667,11 +668,16 @@ class MainWindow(QMainWindow):
         backend = self._current_backend()
         if backend == BACKEND_HFD:
             ok, msg = hfd_availability()
-            color = "#2e7d32" if ok else "#c62828"
+            # jq optional — still show install if only jq is missing
+            need_install = bool(missing_hfd_deps())
+            color = (
+                "#2e7d32"
+                if ok and not any(m.startswith("jq") for m in missing_hfd_deps())
+                else ("#c62828" if not ok else "#ef6c00")
+            )
             self.backend_status.setStyleSheet(f"color: {color}; font-size: 11px;")
             self.backend_status.setText(msg)
-            # One-click install when deps missing
-            show_install = (not ok) and bool(missing_hfd_deps())
+            show_install = need_install
             self.hfd_install_btn.setVisible(show_install)
             if show_install:
                 if can_auto_install_hfd_deps():
@@ -1148,16 +1154,24 @@ class MainWindow(QMainWindow):
             return
         if backend == BACKEND_HFD:
             ok, reason = hfd_availability()
-            if not ok:
-                self.update_status(f"错误：hfd 不可用 — {reason}", error=True)
+            # Allow start when only jq is missing (optional), but nudge install.
+            req = missing_hfd_required_deps()
+            if ok and any(m.startswith("jq") for m in missing_hfd_deps()):
+                self.update_status(
+                    "提示：未安装 jq，大仓库列文件较慢，建议先点「一键安装 hfd 依赖」。"
+                )
+            if (not ok) or req:
+                self.update_status(
+                    f"错误：hfd 不可用 — {reason or '、'.join(req)}",
+                    error=True,
+                )
                 box = QMessageBox(self)
                 box.setIcon(QMessageBox.Icon.Warning)
                 box.setWindowTitle("hfd 不可用")
-                box.setText(reason)
+                box.setText(reason if not ok else "、".join(req))
                 box.setInformativeText(
-                    "可一键安装依赖（aria2 / bash），或改回 huggingface-hub。\n"
-                    "从 hub 换到 hfd：请先停止当前下载，再选 hfd 点下载；"
-                    "相同保存目录下已下完的文件一般可续传。"
+                    "可一键安装依赖（aria2 / bash / jq），或改回 huggingface-hub。\n"
+                    "jq 可显著加快大仓库列文件；无 winget 时会下便携包。"
                 )
                 install_btn = None
                 if can_auto_install_hfd_deps() or missing_hfd_deps():
@@ -1361,7 +1375,7 @@ class MainWindow(QMainWindow):
         """Record that the download produced some output/progress."""
         now = time.monotonic()
         self._last_download_activity = now
-        # Progress-looking lines also count (even if rate is low).
+        # Any log line counts; extra keywords for clarity / future filters.
         if message and (
             re.search(r"\d+%", message)
             or re.search(r"\d+(\.\d+)?\s*[kKmMgGtT]?B", message)
@@ -1369,7 +1383,13 @@ class MainWindow(QMainWindow):
             or "Fetching" in message
             or "Resuming" in message
             or "Listed" in message
+            or "Listing" in message
+            or "scanned" in message.lower()
+            or "Repository size" in message
+            or "metadata" in message.lower()
             or "files" in message.lower()
+            or "aria2" in message.lower()
+            or "hfd" in message.lower()
         ):
             self._last_download_activity = now
 
@@ -1384,8 +1404,19 @@ class MainWindow(QMainWindow):
             return
 
         timeout = int(self.stall_timeout_spin.value())
-        # Grace period: validation / process startup may be quiet.
-        grace = max(45, min(timeout, 90))
+        # Grace: hfd listing 10k+ files (esp. without jq) can take minutes.
+
+        backend = (
+            (self._download_params or {}).get("backend")
+            if self._download_params
+            else None
+        )
+        if backend == BACKEND_HFD:
+            grace = max(180, timeout * 3, 300)
+            # During listing, also require longer idle before stall.
+            timeout = max(timeout, 120)
+        else:
+            grace = max(45, min(timeout, 90))
         if self._download_watch_started and (
             time.monotonic() - self._download_watch_started < grace
         ):

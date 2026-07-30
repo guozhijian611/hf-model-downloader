@@ -85,6 +85,25 @@ def find_wget() -> str | None:
     return shutil.which("wget") or shutil.which("wget.exe")
 
 
+def find_jq() -> str | None:
+    found = shutil.which("jq") or shutil.which("jq.exe")
+    if found:
+        return found
+    for name in ("jq.exe", "jq"):
+        p = tools_bin_dir() / name
+        if p.is_file():
+            return str(p)
+    try:
+        for p in tools_bin_dir().rglob("jq.exe"):
+            return str(p)
+        for p in tools_bin_dir().rglob("jq"):
+            if p.is_file() and os.access(p, os.X_OK):
+                return str(p)
+    except OSError:
+        pass
+    return None
+
+
 def find_hfd_script() -> Path | None:
     """Resolve bundled scripts/hfd.sh in dev and frozen builds."""
     candidates = [
@@ -119,10 +138,12 @@ def hfd_availability() -> tuple[bool, str]:
             False,
             "未找到 bash（Windows 请安装 Git for Windows 并确保 bash 在 PATH）",
         )
+    jq = find_jq()
+    jq_note = "，含 jq" if jq else "，建议安装 jq（列目录更快）"
     if find_aria2c():
-        return True, f"可用（aria2c + bash + {script.name}）"
+        return True, f"可用（aria2c + bash + {script.name}{jq_note}）"
     if find_wget():
-        return True, f"可用（wget 回退 + bash + {script.name}，速度较慢）"
+        return True, f"可用（wget 回退 + bash + {script.name}{jq_note}，速度较慢）"
     return False, "未找到 aria2c 或 wget，请先安装 aria2c 以使用 hfd 高速下载"
 
 
@@ -135,12 +156,21 @@ def missing_hfd_deps() -> list[str]:
         missing.append("bash（Windows 需 Git for Windows）")
     if not find_aria2c() and not find_wget():
         missing.append("aria2c（推荐）或 wget")
+    if not find_jq():
+        missing.append("jq（可选但强烈推荐，大仓库列文件更快）")
     return missing
 
 
-# Sentinel argv for portable aria2 zip install (no winget/choco/scoop).
+def missing_hfd_required_deps() -> list[str]:
+    """Hard requirements only (jq is optional for availability)."""
+    return [m for m in missing_hfd_deps() if not m.startswith("jq")]
+
+
+# Sentinel argv for portable installs (no winget/choco/scoop).
 _PORTABLE_ARIA2_CMD = ["__portable_aria2_windows__"]
+_PORTABLE_JQ_CMD = ["__portable_jq__"]
 ARIA2_RELEASES_API = "https://api.github.com/repos/aria2/aria2/releases/latest"
+JQ_RELEASES_API = "https://api.github.com/repos/jqlang/jq/releases/latest"
 GIT_FOR_WINDOWS_URL = "https://git-scm.com/download/win"
 
 
@@ -155,6 +185,7 @@ def hfd_install_plan() -> tuple[list[list[str]], list[str]]:
     system = platform.system().lower()
     need_aria = not find_aria2c() and not find_wget()
     need_bash = not find_bash()
+    need_jq = not find_jq()
 
     if need_aria:
         if system == "darwin":
@@ -225,6 +256,46 @@ def hfd_install_plan() -> tuple[list[list[str]], list[str]]:
                 "安装时勾选 Git from the command line，装完重启本程序。\n"
                 "（无 winget 时无法静默安装 Git，需手动安装）"
             )
+
+    if need_jq:
+        if system == "darwin":
+            if shutil.which("brew"):
+                cmds.append(["brew", "install", "jq"])
+            else:
+                tips.append("macOS：brew install jq")
+        elif system.startswith("win"):
+            if shutil.which("winget"):
+                # jqlang.jq is the current package id on winget
+                cmds.append(
+                    [
+                        "winget",
+                        "install",
+                        "-e",
+                        "--id",
+                        "jqlang.jq",
+                        "--accept-package-agreements",
+                        "--accept-source-agreements",
+                    ]
+                )
+            elif shutil.which("choco"):
+                cmds.append(["choco", "install", "jq", "-y"])
+            elif shutil.which("scoop"):
+                cmds.append(["scoop", "install", "jq"])
+            else:
+                cmds.append(list(_PORTABLE_JQ_CMD))
+                tips.append(f"将下载便携 jq 到 {tools_bin_dir()}（无需 winget）")
+        else:
+            if shutil.which("apt-get"):
+                cmds.append(["sudo", "apt-get", "install", "-y", "jq"])
+            elif shutil.which("dnf"):
+                cmds.append(["sudo", "dnf", "install", "-y", "jq"])
+            elif shutil.which("pacman"):
+                cmds.append(["sudo", "pacman", "-S", "--noconfirm", "jq"])
+            elif shutil.which("zypper"):
+                cmds.append(["sudo", "zypper", "install", "-y", "jq"])
+            else:
+                cmds.append(list(_PORTABLE_JQ_CMD))
+                tips.append("将尝试下载便携 jq 二进制")
 
     if not find_hfd_script():
         tips.append("未找到内置 hfd.sh，请重新安装/解压本程序完整包")
@@ -340,6 +411,120 @@ def install_portable_aria2_windows(log_cb=None) -> tuple[bool, str]:
     return False, f"已解压但仍检测不到 aria2c，请检查 {target}"
 
 
+def install_portable_jq(log_cb=None) -> tuple[bool, str]:
+    """Download official jq binary into tools_bin_dir() (Windows/Linux/macOS)."""
+
+    def _log(msg: str) -> None:
+        if log_cb:
+            log_cb(msg)
+
+    try:
+        import json
+        from urllib.request import Request, urlopen
+    except ImportError as exc:
+        return False, f"缺少下载库：{exc}"
+
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    dest = tools_bin_dir()
+
+    # Prefer official release asset names
+    asset_want: list[str] = []
+    if system.startswith("win"):
+        if "arm" in machine:
+            asset_want = ["jq-windows-arm64.exe", "jq-win64.exe"]
+        else:
+            asset_want = ["jq-windows-amd64.exe", "jq-win64.exe"]
+        out_name = "jq.exe"
+    elif system == "darwin":
+        if "arm" in machine:
+            asset_want = ["jq-macos-arm64", "jq-osx-amd64"]
+        else:
+            asset_want = ["jq-macos-amd64", "jq-osx-amd64"]
+        out_name = "jq"
+    else:
+        if "arm" in machine or "aarch64" in machine:
+            asset_want = ["jq-linux-arm64", "jq-linux64"]
+        else:
+            asset_want = ["jq-linux-amd64", "jq-linux64"]
+        out_name = "jq"
+
+    zip_url = None
+    try:
+        req = Request(
+            JQ_RELEASES_API,
+            headers={
+                "User-Agent": "hf-model-downloader",
+                "Accept": "application/json",
+            },
+        )
+        with urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        assets = {
+            (a.get("name") or ""): (a.get("browser_download_url") or "")
+            for a in (data.get("assets") or [])
+        }
+        for name in asset_want:
+            if name in assets and assets[name]:
+                zip_url = assets[name]
+                break
+        if not zip_url:
+            # fuzzy match
+            for aname, aurl in assets.items():
+                low = aname.lower()
+                if system.startswith("win") and "win" in low and low.endswith(".exe"):
+                    if ("amd64" in low or "win64" in low) and "arm" not in low:
+                        zip_url = aurl
+                        break
+    except Exception as exc:
+        _log(f"读取 jq Releases 失败，使用固定版本：{exc}")
+
+    if not zip_url:
+        # Fallback 1.7.1 / 1.8.x common URLs
+        if system.startswith("win"):
+            zip_url = (
+                "https://github.com/jqlang/jq/releases/download/jq-1.7.1/"
+                "jq-windows-amd64.exe"
+            )
+        elif system == "darwin" and "arm" in machine:
+            zip_url = (
+                "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-macos-arm64"
+            )
+        else:
+            zip_url = (
+                "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64"
+            )
+
+    target = dest / out_name
+    try:
+        _log(f"下载 jq：{zip_url}")
+        req = Request(zip_url, headers={"User-Agent": "hf-model-downloader"})
+        with urlopen(req, timeout=120) as resp, target.open("wb") as fh:
+            while True:
+                chunk = resp.read(256 * 1024)
+                if not chunk:
+                    break
+                fh.write(chunk)
+        if not system.startswith("win"):
+            try:
+                target.chmod(target.stat().st_mode | 0o755)
+            except OSError:
+                pass
+        _log(f"jq 已就绪：{target}（{target.stat().st_size} bytes）")
+    except Exception as exc:
+        return False, f"下载 jq 失败：{exc}"
+
+    tools = str(dest)
+    path = os.environ.get("PATH", "")
+    if tools not in path.split(os.pathsep):
+        os.environ["PATH"] = tools + os.pathsep + path
+    _refresh_path_hints()
+
+    if find_jq():
+        return True, f"jq 安装成功：{find_jq()}"
+    return False, f"已下载但仍检测不到 jq，请检查 {target}"
+
+
 def run_hfd_deps_install(
     log_cb=None,
     *,
@@ -364,6 +549,13 @@ def run_hfd_deps_install(
             if log_cb:
                 log_cb("使用便携包安装 aria2（无需 winget）…")
             ok, summary = install_portable_aria2_windows(log_cb=log_cb)
+            if log_cb:
+                log_cb(summary)
+            continue
+        if cmd == _PORTABLE_JQ_CMD or (len(cmd) == 1 and cmd[0] == _PORTABLE_JQ_CMD[0]):
+            if log_cb:
+                log_cb("下载便携 jq…")
+            ok, summary = install_portable_jq(log_cb=log_cb)
             if log_cb:
                 log_cb(summary)
             continue
@@ -399,10 +591,15 @@ def run_hfd_deps_install(
             msg = f"找不到命令：{cmd[0]}"
             if log_cb:
                 log_cb(msg)
-            if cmd[0].lower() in ("winget", "choco", "scoop") and not find_aria2c():
-                if log_cb:
-                    log_cb("包管理器不可用，回退便携 aria2…")
-                install_portable_aria2_windows(log_cb=log_cb)
+            if cmd[0].lower() in ("winget", "choco", "scoop"):
+                if not find_aria2c():
+                    if log_cb:
+                        log_cb("包管理器不可用，回退便携 aria2…")
+                    install_portable_aria2_windows(log_cb=log_cb)
+                if not find_jq():
+                    if log_cb:
+                        log_cb("包管理器不可用，回退便携 jq…")
+                    install_portable_jq(log_cb=log_cb)
             continue
         except Exception as exc:
             msg = f"执行失败：{exc}"
@@ -412,15 +609,30 @@ def run_hfd_deps_install(
 
     _refresh_path_hints()
 
-    missing_after = missing_hfd_deps()
-    if not missing_after:
-        ok_msg = "安装完成，hfd 依赖已就绪。若仍提示不可用，请完全退出后重开本程序。"
+    missing_req = missing_hfd_required_deps()
+    missing_all = missing_hfd_deps()
+    if not missing_req and not any(m.startswith("jq") for m in missing_all):
+        ok_msg = (
+            "安装完成，hfd 依赖已就绪（含 jq）。"
+            "若仍提示不可用，请完全退出后重开本程序。"
+        )
         if log_cb:
             log_cb(ok_msg)
         return True, ok_msg
 
-    only_bash = len(missing_after) == 1 and "bash" in missing_after[0].lower()
+    if not missing_req and any(m.startswith("jq") for m in missing_all):
+        if log_cb:
+            log_cb("核心依赖已就绪，再试便携 jq…")
+        install_portable_jq(log_cb=log_cb)
+        _refresh_path_hints()
+        if find_jq():
+            msg = f"安装完成：jq={find_jq()}"
+            if log_cb:
+                log_cb(msg)
+            return True, msg
+
     tip_txt = "\n".join(tips) if tips else ""
+    only_bash = len(missing_req) == 1 and "bash" in missing_req[0].lower()
     if only_bash and find_aria2c():
         fail = (
             "aria2 已就绪，但仍缺少 bash。\n"
@@ -431,14 +643,17 @@ def run_hfd_deps_install(
             log_cb(fail)
         return False, fail
 
+    still = missing_hfd_deps()
     fail = (
         "安装步骤已执行，但仍缺："
-        + "、".join(missing_after)
+        + "、".join(still)
         + "。请关闭本程序后重新打开（刷新 PATH），"
         "或按提示手动安装。\n" + tip_txt
     )
     if log_cb:
         log_cb(fail)
+    if not missing_hfd_required_deps():
+        return True, "核心依赖已就绪（jq 未装上时 hfd 仍可用，但大仓库列目录较慢）"
     return False, fail
 
 
@@ -534,6 +749,10 @@ def download_with_hfd(
     env = os.environ.copy()
     env["HF_ENDPOINT"] = resolved_endpoint
     env["HF_TOKEN"] = token or env.get("HF_TOKEN", "")
+    # Prefer our portable tools dir (aria2/jq) for the bash child.
+    tools = str(tools_bin_dir())
+    env["PATH"] = tools + os.pathsep + env.get("PATH", "")
+    _refresh_path_hints()
     # Make aria2c / curl honor proxy when set.
     if proxy:
         env.setdefault("http_proxy", proxy)
@@ -546,37 +765,70 @@ def download_with_hfd(
         pipe.send("下载后端：hfd（gist.github.com/padeoe/…）")
         pipe.send(f"工具：{tool}  bash：{bash}")
         pipe.send(f"脚本：{script}")
+        jq_path = find_jq()
+        if jq_path:
+            pipe.send(f"jq：{jq_path}")
+        else:
+            pipe.send(
+                "提示：未检测到 jq，大仓库列文件会较慢；"
+                "可点「一键安装 hfd 依赖」安装 jq。"
+            )
         pipe.send(f"Endpoint：{resolved_endpoint}")
         pipe.send(f"保存目录：{repo_dir}")
         pipe.send(f"并发：-x {threads}（单文件连接） -j {jobs}（并行文件）")
         pipe.send(f"命令：{' '.join(cmd[:6])} … --local-dir {repo_dir}")
 
     try:
+        # Binary + unbuffered so \r progress ("Listing files… N scanned")
+        # reaches the UI promptly and does not trip the stall watchdog.
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             env=env,
-            text=True,
-            bufsize=1,
-            universal_newlines=True,
+            bufsize=0,
         )
     except OSError as exc:
         _abort_download(pipe, f"无法启动 hfd：{exc}")
 
     assert proc.stdout is not None
     try:
-        for raw in proc.stdout:
-            # hfd uses \r + ANSI; normalize for UI/monitor parsing.
-            line = _normalize_hfd_output_line(raw)
-            if not line:
-                continue
-            if pipe:
-                for msg in _hfd_progress_messages(line):
-                    pipe.send(msg)
-                pipe.send(line)
-            else:
-                print(line, flush=True)
+        buf = b""
+        while True:
+            chunk = proc.stdout.read(256)
+            if not chunk:
+                break
+            buf += chunk
+            # Split on CR or LF; keep incomplete tail
+            while True:
+                cut = -1
+                for sep in (b"\r", b"\n"):
+                    i = buf.find(sep)
+                    if i != -1 and (cut == -1 or i < cut):
+                        cut = i
+                if cut == -1:
+                    break
+                raw = buf[:cut].decode("utf-8", errors="replace")
+                buf = buf[cut + 1 :]
+                line = _normalize_hfd_output_line(raw)
+                if not line:
+                    continue
+                if pipe:
+                    for msg in _hfd_progress_messages(line):
+                        pipe.send(msg)
+                    pipe.send(line)
+                else:
+                    print(line, flush=True)
+        # leftover
+        if buf.strip():
+            line = _normalize_hfd_output_line(buf.decode("utf-8", errors="replace"))
+            if line:
+                if pipe:
+                    for msg in _hfd_progress_messages(line):
+                        pipe.send(msg)
+                    pipe.send(line)
+                else:
+                    print(line, flush=True)
         code = proc.wait()
     except KeyboardInterrupt:
         proc.terminate()

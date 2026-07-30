@@ -65,3 +65,13 @@ def test_hfd_progress_line_parsing():
 
     listed = _normalize_hfd_output_line("Listed 10755 files (49.6G)")
     assert _hfd_progress_messages(listed) == ["[HF_META]\tfiles\t10755"]
+
+
+def test_jq_is_optional_for_required_deps():
+    from src.hfd_backend import missing_hfd_deps, missing_hfd_required_deps
+
+    req = missing_hfd_required_deps()
+    assert all(not m.startswith("jq") for m in req)
+    # find_jq may or may not exist on CI; just ensure API works
+    all_m = missing_hfd_deps()
+    assert isinstance(all_m, list)
