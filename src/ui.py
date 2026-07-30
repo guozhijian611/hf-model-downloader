@@ -66,6 +66,13 @@ AUTHOR_GITHUB_URL = "https://github.com/guozhijian611"
 logger = logging.getLogger(__name__)
 
 
+def _tip(*widgets, text: str) -> None:
+    """Attach the same hover tooltip to one or more widgets (label + control)."""
+    for w in widgets:
+        if w is not None:
+            w.setToolTip(text)
+
+
 class _HfdDepsInstallWorker(QThread):
     """Background installer for aria2 / bash used by hfd backend."""
 
@@ -163,6 +170,23 @@ class MainWindow(QMainWindow):
 
         self.platform_button_group.idClicked.connect(self.on_platform_icon_changed)
 
+        _tip(
+            self.hf_button,
+            text=(
+                "下载来源：Hugging Face\n"
+                "支持 Model / Dataset；可用镜像 Endpoint、Token、代理\n"
+                "下载方式可选内置 huggingface-hub 或 hfd/aria2"
+            ),
+        )
+        _tip(
+            self.ms_button,
+            text=(
+                "下载来源：ModelScope（魔搭）\n"
+                "支持模型与数据集；使用 modelscope SDK\n"
+                "hfd/aria2 后端仅适用于 Hugging Face"
+            ),
+        )
+
         icon_layout.addWidget(self.hf_button)
         icon_layout.addWidget(self.ms_button)
         icon_layout.addStretch()
@@ -209,18 +233,50 @@ class MainWindow(QMainWindow):
         self.check_update_btn = QPushButton("🔄 检查更新")
         self.check_update_btn.setMaximumWidth(150)
         self.check_update_btn.setFixedHeight(standard_button_height)
-        self.check_update_btn.setToolTip("从 GitHub Releases 检查是否有新版本")
         self.check_update_btn.clicked.connect(self.check_for_updates)
         self.open_logs_btn = QPushButton("📋 打开日志")
         self.open_logs_btn.setMaximumWidth(150)
         self.open_logs_btn.setFixedHeight(standard_button_height)
-        self.open_logs_btn.setToolTip("打开运行日志 / 崩溃日志目录")
         self.open_logs_btn.clicked.connect(self.open_log_folder)
         self.monitor_btn = QPushButton("📊 监控面板")
         self.monitor_btn.setMaximumWidth(150)
         self.monitor_btn.setFixedHeight(standard_button_height)
-        self.monitor_btn.setToolTip("打开右侧悬浮监控窗（网速 / 磁盘 / 文件进度）")
         self.monitor_btn.clicked.connect(self.toggle_monitor_window)
+        _tip(
+            self.browse_models_btn,
+            text="在浏览器打开当前平台的模型列表页，便于复制仓库 ID",
+        )
+        _tip(
+            self.browse_datasets_btn,
+            text="在浏览器打开当前平台的数据集列表页，便于复制仓库 ID",
+        )
+        _tip(
+            self.get_token_btn,
+            text=(
+                "打开当前平台的 Token 申请/管理页\n"
+                "HF：Access Tokens；ModelScope：访问令牌"
+            ),
+        )
+        _tip(
+            self.check_update_btn,
+            text="从 GitHub Releases 检查是否有新版本，可下载并安装更新",
+        )
+        _tip(
+            self.open_logs_btn,
+            text=(
+                "打开本机运行/崩溃日志目录\n"
+                "含 runtime.log、crash-*.log 等，便于排查闪退"
+            ),
+        )
+        _tip(
+            self.monitor_btn,
+            text=(
+                "打开/关闭右侧监控窗：\n"
+                "· 网速曲线\n"
+                "· 文件进度\n"
+                "· aria2/hfd 错误日志实时刷新（403/SSL 等）"
+            ),
+        )
 
         links_layout.addWidget(self.browse_models_btn)
         links_layout.addWidget(self.browse_datasets_btn)
@@ -254,10 +310,22 @@ class MainWindow(QMainWindow):
         self.type_combo.currentTextChanged.connect(self.on_type_changed)
         self.skip_validate_checkbox = QCheckBox("跳过类型校验")
         self.skip_validate_checkbox.setChecked(False)
-        self.skip_validate_checkbox.setToolTip(
-            "跳过开始下载前连接 Hugging Face 校验仓库是 Model 还是 Dataset。\n"
-            "网络慢/代理不稳时校验常超时（约 20 秒）；勾选后立即进入下载。\n"
-            "请自行确认「类型」选择正确，否则可能下错或失败。"
+        _tip(
+            type_label,
+            self.type_combo,
+            text=(
+                "仓库类型：Model（模型）或 Dataset（数据集）\n"
+                "须与目标仓库一致。HF 默认会在下载前校验类型；\n"
+                "选错可能导致下载失败或文件结构不对。"
+            ),
+        )
+        _tip(
+            self.skip_validate_checkbox,
+            text=(
+                "跳过开始下载前连接 Hugging Face 校验仓库是 Model 还是 Dataset。\n"
+                "网络慢/代理不稳时校验常超时（约 20 秒）；勾选后立即进入下载。\n"
+                "请自行确认「类型」选择正确，否则可能下错或失败。"
+            ),
         )
         type_layout.addWidget(type_label)
         type_layout.addWidget(self.type_combo)
@@ -271,23 +339,33 @@ class MainWindow(QMainWindow):
         for key, label in BACKEND_CHOICES:
             self.backend_combo.addItem(label, key)
         self.backend_combo.setCurrentIndex(0)
-        self.backend_combo.setToolTip(
-            "huggingface-hub：内置 Python SDK\n"
-            "hfd：内置 padeoe/hfd.sh + aria2c 多线程（仅 Hugging Face）\n"
-            "脚本来源：https://gist.github.com/padeoe/697678ab8e528b85a2a7bddafea1fa4f"
-        )
         self.backend_combo.currentIndexChanged.connect(self._on_backend_changed)
         self.backend_status = QLabel("")
         self.backend_status.setStyleSheet("color: #666; font-size: 11px;")
         self.backend_status.setWordWrap(True)
         self.hfd_install_btn = QPushButton("一键安装 hfd 依赖")
-        self.hfd_install_btn.setToolTip(
-            "自动安装 aria2c（及 Windows 上的 Git Bash，如缺失）。\n"
-            "使用 brew / winget / choco / scoop / apt 等，需本机已有对应包管理器。\n"
-            "安装后建议重启本程序以刷新 PATH。"
-        )
         self.hfd_install_btn.setVisible(False)
         self.hfd_install_btn.clicked.connect(self.install_hfd_dependencies)
+        _tip(
+            backend_label,
+            self.backend_combo,
+            self.backend_status,
+            text=(
+                "下载后端：\n"
+                "· huggingface-hub：内置 Python SDK，支持 hf_xet，兼容性好\n"
+                "· hfd/aria2：padeoe/hfd.sh + aria2c 多连接，常用于冲带宽\n"
+                "  （仅 Hugging Face；需 aria2c，Windows 还需 bash/Git）\n"
+                "脚本：https://gist.github.com/padeoe/697678ab8e528b85a2a7bddafea1fa4f"
+            ),
+        )
+        _tip(
+            self.hfd_install_btn,
+            text=(
+                "自动安装 aria2c（及 Windows 上的 Git Bash，如缺失）。\n"
+                "优先用本机 winget/scoop/choco/brew/apt；Windows 也可便携安装。\n"
+                "安装后建议重启本程序以刷新 PATH。"
+            ),
+        )
         backend_layout.addWidget(backend_label)
         backend_layout.addWidget(self.backend_combo)
         backend_layout.addWidget(self.backend_status, stretch=1)
@@ -300,6 +378,16 @@ class MainWindow(QMainWindow):
         self.repo_label = QLabel("模型 ID:")
         self.repo_input = QLineEdit()
         self.repo_input.setPlaceholderText("例如：qwen/Qwen2.5-Coder-1.5B-Instruct")
+        _tip(
+            self.repo_label,
+            self.repo_input,
+            text=(
+                "仓库 ID，格式一般为 org/name 或 user/name\n"
+                "示例：qwen/Qwen2.5-Coder-1.5B-Instruct\n"
+                "数据集同理，如 mlfoundations/dcvlm-baseline-200b\n"
+                "可点右侧「浏览模型/数据集」在网页查找后复制 ID"
+            ),
+        )
         repo_layout.addWidget(self.repo_label)
         repo_layout.addWidget(self.repo_input)
         layout.addLayout(repo_layout)
@@ -309,6 +397,17 @@ class MainWindow(QMainWindow):
         self.path_input = QLineEdit()
         browse_button = QPushButton("浏览")
         browse_button.clicked.connect(self.browse_path)
+        _tip(
+            path_label,
+            self.path_input,
+            browse_button,
+            text=(
+                "下载保存的父目录\n"
+                "实际目录为：保存路径 / 仓库名\n"
+                "例如 E:/ + 仓库 dcvlm-baseline-200b → E:/dcvlm-baseline-200b\n"
+                "支持断点续传，请勿随便删除已下载分块"
+            ),
+        )
         path_layout.addWidget(path_label)
         path_layout.addWidget(self.path_input)
         path_layout.addWidget(browse_button)
@@ -318,6 +417,18 @@ class MainWindow(QMainWindow):
         token_label = QLabel("Token:")
         self.token_input = QLineEdit()
         self.token_input.setPlaceholderText("可选：私有仓库或提高限流额度")
+        self.token_input.setEchoMode(QLineEdit.EchoMode.PasswordEchoOnEdit)
+        _tip(
+            token_label,
+            self.token_input,
+            text=(
+                "访问令牌（可选）\n"
+                "· Hugging Face：Settings → Access Tokens（hf_…）\n"
+                "· ModelScope：账号 Token\n"
+                "用途：私有仓库、gated 模型、提高 API 限流\n"
+                "可点「获取 Token」打开对应网页；Token 会保存在本机设置中"
+            ),
+        )
         token_layout.addWidget(token_label)
         token_layout.addWidget(self.token_input)
         layout.addLayout(token_layout)
@@ -328,13 +439,24 @@ class MainWindow(QMainWindow):
         self.endpoint_combo.setEditable(True)
         self.endpoint_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.endpoint_combo.setMinimumWidth(360)
-        self.endpoint_combo.setToolTip(
-            "可下拉选择预设，也可直接输入自定义 Endpoint URL"
-        )
         self.endpoint_failover = QCheckBox("失败自动切换")
         self.endpoint_failover.setChecked(True)
-        self.endpoint_failover.setToolTip(
-            "当前 Endpoint 失败时，按预设顺序自动尝试其他 Endpoint（断点续传）"
+        _tip(
+            endpoint_label,
+            self.endpoint_combo,
+            text=(
+                "API / 下载入口地址\n"
+                "· HF 预设：hf-mirror.com（国内常用）、huggingface.co（官方）\n"
+                "· 也可手动输入自定义镜像 URL\n"
+                "有代理时官方站点往往更稳；无代理可优先镜像"
+            ),
+        )
+        _tip(
+            self.endpoint_failover,
+            text=(
+                "当前 Endpoint 下载失败时，按预设顺序自动尝试下一个\n"
+                "（支持断点续传）。取消勾选则只使用你选中的那一个。"
+            ),
         )
         endpoint_layout.addWidget(endpoint_label)
         endpoint_layout.addWidget(self.endpoint_combo, stretch=1)
@@ -352,6 +474,19 @@ class MainWindow(QMainWindow):
         )
         self.proxy_input.setEnabled(False)
         self.proxy_enabled.toggled.connect(self.proxy_input.setEnabled)
+        _tip(
+            proxy_label,
+            self.proxy_enabled,
+            self.proxy_input,
+            text=(
+                "HTTP / HTTPS / SOCKS 代理（下载与校验都会走）\n"
+                "示例：\n"
+                "  http://127.0.0.1:7890\n"
+                "  socks5://127.0.0.1:10808\n"
+                "须先勾选「启用」。hfd/aria2 与 hub 后端均会使用。\n"
+                "系统环境变量里的代理不会自动代入，请在此填写。"
+            ),
+        )
         proxy_layout.addWidget(proxy_label)
         proxy_layout.addWidget(self.proxy_enabled)
         proxy_layout.addWidget(self.proxy_input)
@@ -360,30 +495,51 @@ class MainWindow(QMainWindow):
         retry_layout = QHBoxLayout()
         self.auto_retry_checkbox = QCheckBox("失败自动重试直至完成")
         self.auto_retry_checkbox.setChecked(True)
-        self.auto_retry_checkbox.setToolTip(
-            "下载中断或失败时自动重试，已下载部分会断点续传；"
-            "点击「停止」可结束重试循环。"
-        )
         self.stall_restart_checkbox = QCheckBox("卡住无速度自动重启")
         self.stall_restart_checkbox.setChecked(True)
-        self.stall_restart_checkbox.setToolTip(
-            "下载过程中若长时间没有进度日志/速度，自动停止并重新开始（断点续传）。"
-            "可同时配置下方「卡住时执行」命令（例如重启 v2ray 内核）。"
-        )
         stall_timeout_label = QLabel("卡住超时(秒):")
         self.stall_timeout_spin = QSpinBox()
         self.stall_timeout_spin.setRange(10, 600)
         self.stall_timeout_spin.setSingleStep(10)
         self.stall_timeout_spin.setValue(120)
-        self.stall_timeout_spin.setToolTip("超过该秒数无进度则视为卡住（默认 120 秒）")
         retry_wait_label = QLabel("重试等待(秒):")
         self.retry_wait_spin = QSpinBox()
         self.retry_wait_spin.setRange(0, 600)
         self.retry_wait_spin.setSingleStep(1)
         self.retry_wait_spin.setValue(5)
-        self.retry_wait_spin.setToolTip(
-            "失败自动重试 / 卡住重启后，等待多少秒再继续下载。\n"
-            "0 表示几乎立即重试；若配置了卡住关联命令，可适当加大以便代理内核恢复。"
+        _tip(
+            self.auto_retry_checkbox,
+            text=(
+                "下载中断或失败时自动重试，已下载部分会断点续传\n"
+                "点击「停止」结束重试循环，不会无限重试"
+            ),
+        )
+        _tip(
+            self.stall_restart_checkbox,
+            text=(
+                "长时间没有进度日志/网速时，判定为卡住：\n"
+                "自动停止并重新开始（断点续传）\n"
+                "可配合「卡住时执行」命令（如重启代理内核）\n"
+                "大仓库列文件阶段可能较久，超时请适当调大"
+            ),
+        )
+        _tip(
+            stall_timeout_label,
+            self.stall_timeout_spin,
+            text=(
+                "无进度多久算「卡住」（秒）\n"
+                "默认 120。过短会在列文件/鉴权阶段误重启；\n"
+                "过长则真卡死时恢复更慢。范围 10～600。"
+            ),
+        )
+        _tip(
+            retry_wait_label,
+            self.retry_wait_spin,
+            text=(
+                "失败自动重试或卡住重启后，等待多少秒再继续\n"
+                "0 = 几乎立即重试；若要跑「卡住时执行」命令，\n"
+                "可设 5～30 秒给代理内核重启时间"
+            ),
         )
         retry_layout.addWidget(self.auto_retry_checkbox)
         retry_layout.addWidget(self.stall_restart_checkbox)
@@ -396,23 +552,21 @@ class MainWindow(QMainWindow):
 
         stall_cmd_layout = QHBoxLayout()
         stall_cmd_label = QLabel("卡住时执行:")
-        stall_cmd_label.setToolTip(
-            "检测到卡住并自动重启前，在后台执行的系统命令/脚本。\n"
-            "常用于重启卡死的代理内核（v2ray/xray 等）。\n"
-            "留空则只重启下载，不跑额外命令。"
-        )
         self.stall_cmd_input = QLineEdit()
         self.stall_cmd_input.setPlaceholderText(
             "可选：卡住时执行的命令，如 killall xray 或 taskkill /F /IM xray.exe"
         )
-        self.stall_cmd_input.setToolTip(
-            "shell 命令（macOS/Linux 走 sh，Windows 走 cmd）。\n"
-            "示例：\n"
-            "  macOS: killall xray; sleep 2; open -a v2rayN\n"
-            '  Windows: taskkill /F /IM xray.exe & timeout /t 2 & start "" '
-            '"C:\\Path\\to\\v2rayN.exe"\n'
-            "  或直接写脚本路径：/path/to/restart-proxy.sh\n"
-            "命令在后台执行，不阻塞界面；完成后日志会提示结果。"
+        _tip(
+            stall_cmd_label,
+            self.stall_cmd_input,
+            text=(
+                "检测到卡住并自动重启下载前，在后台执行的系统命令/脚本\n"
+                "常用于重启卡死的代理（v2ray/xray 等）。留空则只重启下载。\n"
+                "示例：\n"
+                "  macOS: killall xray; sleep 2; open -a v2rayN\n"
+                "  Windows: taskkill /F /IM xray.exe & timeout /t 2\n"
+                "命令后台执行，不阻塞界面；结果写在日志里"
+            ),
         )
         self.stall_restart_checkbox.toggled.connect(self._on_stall_restart_toggled)
         self._on_stall_restart_toggled(self.stall_restart_checkbox.isChecked())
@@ -421,33 +575,57 @@ class MainWindow(QMainWindow):
         layout.addLayout(stall_cmd_layout)
 
         concurrency_layout = QHBoxLayout()
-        concurrency_layout.addWidget(QLabel("并发:"))
-        concurrency_layout.addWidget(QLabel("hub文件"))
+        conc_title = QLabel("并发:")
+        hub_label = QLabel("hub文件")
         self.hub_workers_spin = QSpinBox()
         self.hub_workers_spin.setRange(1, 32)
         self.hub_workers_spin.setValue(8)
-        self.hub_workers_spin.setToolTip(
-            "huggingface-hub 并行下载的文件数（max_workers）\n"
-            "越大越吃带宽/CPU；镜像不稳时可降到 2～4"
-        )
-        concurrency_layout.addWidget(self.hub_workers_spin)
-        concurrency_layout.addWidget(QLabel("hfd连接-x"))
+        hfd_x_label = QLabel("hfd连接-x")
         self.hfd_threads_spin = QSpinBox()
         self.hfd_threads_spin.setRange(1, 16)
-        self.hfd_threads_spin.setValue(8)
-        self.hfd_threads_spin.setToolTip(
-            "hfd/aria2 单文件分片连接数（-x，最大 10 由 hfd 限制）\n"
-            "提高有助于单文件吃满带宽"
-        )
-        concurrency_layout.addWidget(self.hfd_threads_spin)
-        concurrency_layout.addWidget(QLabel("hfd任务-j"))
+        self.hfd_threads_spin.setValue(4)
+        hfd_j_label = QLabel("hfd任务-j")
         self.hfd_jobs_spin = QSpinBox()
-        self.hfd_jobs_spin.setRange(1, 16)
-        self.hfd_jobs_spin.setValue(5)
-        self.hfd_jobs_spin.setToolTip(
-            "hfd/aria2 同时下载的文件数（-j，最大 10 由 hfd 限制）\n"
-            "多文件仓库可适当提高；配合代理 LB 更有效"
+        self.hfd_jobs_spin.setRange(1, 32)
+        self.hfd_jobs_spin.setValue(8)
+        _tip(
+            conc_title,
+            text="下载并行参数：hub 与 hfd 两套后端各用各的，互不影响",
         )
+        _tip(
+            hub_label,
+            self.hub_workers_spin,
+            text=(
+                "【仅 huggingface-hub 后端】并行下载的文件数（max_workers）\n"
+                "越大越吃带宽与 CPU；镜像不稳时可降到 2～4\n"
+                "范围 1～32。选 hfd 后端时此值不生效"
+            ),
+        )
+        _tip(
+            hfd_x_label,
+            self.hfd_threads_spin,
+            text=(
+                "【仅 hfd/aria2 后端】单文件分片连接数（aria2 -x 与 -s）\n"
+                "提高可加快单个大文件；由你自行配置，程序不会强制改写\n"
+                "若 HF Xet CDN 日志里大量 status=403，可降到 1～2\n"
+                "范围 1～16。选 hub 后端时此值不生效"
+            ),
+        )
+        _tip(
+            hfd_j_label,
+            self.hfd_jobs_spin,
+            text=(
+                "【仅 hfd/aria2 后端】同时下载的文件数（aria2 -j）\n"
+                "多文件仓库可提高以吃满带宽；过高可能限流或代理拥堵\n"
+                "由你自行配置。范围 1～32。选 hub 后端时此值不生效"
+            ),
+        )
+        concurrency_layout.addWidget(conc_title)
+        concurrency_layout.addWidget(hub_label)
+        concurrency_layout.addWidget(self.hub_workers_spin)
+        concurrency_layout.addWidget(hfd_x_label)
+        concurrency_layout.addWidget(self.hfd_threads_spin)
+        concurrency_layout.addWidget(hfd_j_label)
         concurrency_layout.addWidget(self.hfd_jobs_spin)
         concurrency_layout.addStretch()
         layout.addLayout(concurrency_layout)
@@ -460,6 +638,21 @@ class MainWindow(QMainWindow):
         self.stop_button.setFixedHeight(standard_button_height)
         self.stop_button.clicked.connect(self.stop_download)
         self.stop_button.setEnabled(False)
+        _tip(
+            self.download_button,
+            text=(
+                "开始下载当前表单配置的仓库\n"
+                "表单会自动记住；支持断点续传与失败重试（若已勾选）"
+            ),
+        )
+        _tip(
+            self.stop_button,
+            text=(
+                "停止当前下载，并取消自动重试\n"
+                "hfd 模式会结束后台 bash/aria2 进程树\n"
+                "已下载文件保留，下次可继续"
+            ),
+        )
         button_layout.addWidget(self.download_button)
         button_layout.addWidget(self.stop_button)
         layout.addLayout(button_layout)
@@ -472,6 +665,14 @@ class MainWindow(QMainWindow):
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setMinimumHeight(100)
+        _tip(
+            self.log_text,
+            text=(
+                "主界面下载日志（状态、hfd 摘要输出等）\n"
+                "aria2 的 403/SSL 详细错误在「监控面板」→ aria2/hfd 错误日志\n"
+                "或 {保存目录}/仓库名/.hfd/download.log"
+            ),
+        )
         layout.addWidget(self.log_text)
 
         footer_frame = QFrame()
@@ -613,9 +814,9 @@ class MainWindow(QMainWindow):
             max(1, min(32, int(data.get("hub_max_workers") or 8)))
         )
         self.hfd_threads_spin.setValue(
-            max(1, min(16, int(data.get("hfd_threads") or 8)))
+            max(1, min(16, int(data.get("hfd_threads") or 4)))
         )
-        self.hfd_jobs_spin.setValue(max(1, min(16, int(data.get("hfd_jobs") or 5))))
+        self.hfd_jobs_spin.setValue(max(1, min(32, int(data.get("hfd_jobs") or 8))))
 
         backend = data.get("download_backend") or BACKEND_HUB
         idx = self.backend_combo.findData(backend)

@@ -699,8 +699,8 @@ def download_with_hfd(
     pipe=None,
     repo_type: str = "model",
     proxy: str | None = None,
-    threads: int = 8,
-    jobs: int = 5,
+    threads: int = 4,
+    jobs: int = 8,
 ) -> str:
     """
     Run bundled hfd.sh and stream output to pipe.
@@ -735,9 +735,9 @@ def download_with_hfd(
         "--tool",
         tool,
         "-x",
-        str(max(1, min(int(threads), 10))),
+        str(max(1, min(int(threads), 16))),
         "-j",
-        str(max(1, min(int(jobs), 10))),
+        str(max(1, min(int(jobs), 32))),
         "--local-dir",
         repo_dir,
     ]
@@ -775,7 +775,9 @@ def download_with_hfd(
             )
         pipe.send(f"Endpoint：{resolved_endpoint}")
         pipe.send(f"保存目录：{repo_dir}")
-        pipe.send(f"并发：-x {threads}（单文件连接） -j {jobs}（并行文件）")
+        pipe.send(
+            f"并发：-x {threads}（单文件分片/连接，与 -s 相同） -j {jobs}（并行文件）"
+        )
         pipe.send(f"命令：{' '.join(cmd[:6])} … --local-dir {repo_dir}")
 
     popen_kwargs: dict = {

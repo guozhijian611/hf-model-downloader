@@ -778,8 +778,8 @@ def unified_download_model(
                         pipe,
                         repo_type,
                         proxy,
-                        threads=hfd_threads if hfd_threads else 8,
-                        jobs=hfd_jobs if hfd_jobs else 5,
+                        threads=hfd_threads if hfd_threads else 4,
+                        jobs=hfd_jobs if hfd_jobs else 8,
                     )
                 else:
                     download_huggingface(

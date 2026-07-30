@@ -77,8 +77,9 @@ while [[ $# -gt 0 ]]; do
         --tool)
             [[ "$2" == aria2c || "$2" == wget ]] || { printf "%b[Error] Invalid tool. Use 'aria2c' or 'wget'.%b\n" "$RED" "$NC"; exit 1; }
             TOOL="$2"; shift 2 ;;
-        -x) validate_number "threads (-x)" "$2" 10; THREADS="$2"; shift 2 ;;
-        -j) validate_number "concurrent downloads (-j)" "$2" 10; CONCURRENT="$2"; shift 2 ;;
+        # Caps raised so GUI can pass higher values; user chooses tradeoff.
+        -x) validate_number "threads (-x)" "$2" 16; THREADS="$2"; shift 2 ;;
+        -j) validate_number "concurrent downloads (-j)" "$2" 32; CONCURRENT="$2"; shift 2 ;;
         --dataset) DATASET=1; shift ;;
         --local-dir) LOCAL_DIR="$2"; shift 2 ;;
         --revision) REVISION="$2"; shift 2 ;;
@@ -430,7 +431,10 @@ MON_PID=$!
 trap 'kill "$MON_PID" 2>/dev/null' EXIT
 
 if [[ "$TOOL" == "aria2c" ]]; then
+    # -x / -s follow THREADS (GUI "hfd连接-x"); -j follows CONCURRENT (GUI "hfd任务-j").
+    # Note: some HF Xet CDN URLs return 403 on multi-range (-s>1); lower -x if that happens.
     aria2c --quiet=true --log=.hfd/download.log --log-level=error --file-allocation=none \
+        --max-tries=0 --retry-wait=2 --timeout=60 --connect-timeout=30 \
         -x "$THREADS" -j "$CONCURRENT" -s "$THREADS" -k 1M -c -i "$fileslist_file" >/dev/null
     status=$?
 else
