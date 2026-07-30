@@ -254,24 +254,62 @@ class DownloadProgressPanel(QFrame):
             f"速度 {format_rate(summary['active_rate_bps'])}"
         )
 
-        rows = self.tracker.recent_files(limit=20)
+        rows = self.tracker.recent_files(limit=24)
         self.empty_hint.setVisible(len(rows) == 0)
+        # Stable update: keep row order by name; only rewrite cells when needed.
+        self._apply_stable_rows(rows)
+
+    def _apply_stable_rows(self, rows: list[FileProgress]) -> None:
+        """Update table without reshuffling rows by speed (prevents visual jump)."""
+        # Desired order is already stable from recent_files (overall + name sort).
+        names = [fp.name for fp in rows]
+        # If set of names unchanged and count same, update cells in place only.
+        current_names: list[str] = []
+        for r in range(self.table.rowCount()):
+            item = self.table.item(r, 0)
+            current_names.append(item.text() if item else "")
+
+        if current_names == names:
+            for i, fp in enumerate(rows):
+                self._update_row_values(i, fp)
+            return
+
         self.table.setRowCount(len(rows))
         for i, fp in enumerate(rows):
             self._set_row(i, fp)
 
-    def _set_row(self, row: int, fp: FileProgress) -> None:
+    def _row_values(self, fp: FileProgress) -> list[str]:
         pct = fp.pct
         if fp.total_bytes > 0 and fp.done_bytes > 0 and pct < 0.05:
             pct = 100.0 * fp.done_bytes / fp.total_bytes
-        items = [
+        elif fp.total_bytes > 0 and fp.done_bytes > 0:
+            pct = min(100.0, 100.0 * fp.done_bytes / fp.total_bytes)
+        return [
             fp.name,
             f"{pct:.1f}%",
             fp.size_text,
             format_rate(fp.rate_bps) if fp.rate_bps else "—",
             fp.status if not fp.is_overall else "总体",
         ]
-        for col, text in enumerate(items):
+
+    def _update_row_values(self, row: int, fp: FileProgress) -> None:
+        values = self._row_values(fp)
+        for col, text in enumerate(values):
+            item = self.table.item(row, col)
+            if item is None:
+                self._set_row(row, fp)
+                return
+            if item.text() != text:
+                item.setText(text)
+            if col == 4 and not fp.is_overall:
+                if fp.status == "完成":
+                    item.setForeground(QColor("#2e7d32"))
+                else:
+                    item.setForeground(QColor("#ef6c00"))
+
+    def _set_row(self, row: int, fp: FileProgress) -> None:
+        values = self._row_values(fp)
+        for col, text in enumerate(values):
             item = QTableWidgetItem(text)
             if fp.is_overall:
                 item.setForeground(QColor("#1565c0"))
@@ -282,6 +320,9 @@ class DownloadProgressPanel(QFrame):
                     item.setForeground(QColor("#ef6c00"))
             if col == 0 and fp.source == "disk":
                 item.setToolTip("来自磁盘扫描 (*.incomplete)")
+            # Filename column: keep left-aligned, non-editable
+            if col == 0:
+                item.setToolTip(fp.name)
             self.table.setItem(row, col, item)
 
     def _on_toggle(self, expanded: bool) -> None:

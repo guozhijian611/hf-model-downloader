@@ -407,24 +407,22 @@ class DownloadProgressTracker:
             for f in self.files.values()
             if f.status == "下载中" and (now - f.updated_at) <= self.stale_seconds
         ]
-        active.sort(key=lambda x: (-x.rate_bps, -x.done_bytes, x.name))
+        # Stable name order — avoid rows jumping by speed/recency.
+        active.sort(key=lambda x: x.name.lower())
         return active
 
     def recent_files(self, limit: int = 50) -> list[FileProgress]:
-        """Active first, then recently updated. Include overall as first row."""
+        """Stable list: overall first, then active by name, then done by name.
+
+        Sorted by filename (not by speed/update time) so the table does not
+        reshuffle every tick — only values change in place.
+        """
         now = time.time()
-        items = list(self.files.values())
-        items.sort(
-            key=lambda f: (
-                0 if f.status == "下载中" else 1,
-                -f.updated_at,
-            )
-        )
         out: list[FileProgress] = []
         # Always surface overall as a synthetic first row when present
         if self.overall:
             o = FileProgress(
-                name="【总体】" + (self.overall.name[:40] if self.overall.name else ""),
+                name="【总体】",
                 pct=self.overall.pct,
                 done_bytes=self.overall.done_bytes,
                 total_bytes=self.overall.total_bytes,
@@ -434,16 +432,24 @@ class DownloadProgressTracker:
                 is_overall=True,
                 source="log",
             )
-            # Prefer computed pct if tqdm rounded to 0
             if o.total_bytes > 0 and o.done_bytes > 0:
                 computed = 100.0 * o.done_bytes / o.total_bytes
                 if o.pct < 0.05 and computed >= 0.05:
                     o.pct = computed
             out.append(o)
 
-        for f in items:
-            if f.status == "下载中" or (now - f.updated_at) < 600:
-                out.append(f)
+        active: list[FileProgress] = []
+        done: list[FileProgress] = []
+        for f in self.files.values():
+            if f.status == "下载中" and (now - f.updated_at) <= self.stale_seconds:
+                active.append(f)
+            elif f.status == "完成" and (now - f.updated_at) < 120:
+                # Keep finished rows briefly, still name-sorted, below active
+                done.append(f)
+        active.sort(key=lambda f: f.name.lower())
+        done.sort(key=lambda f: f.name.lower())
+        for f in active + done:
+            out.append(f)
             if len(out) >= limit:
                 break
         return out
