@@ -252,8 +252,16 @@ class MainWindow(QMainWindow):
         self.type_combo.addItems(["Model", "Dataset"])
         self.type_combo.setCurrentText("Model")
         self.type_combo.currentTextChanged.connect(self.on_type_changed)
+        self.skip_validate_checkbox = QCheckBox("跳过类型校验")
+        self.skip_validate_checkbox.setChecked(False)
+        self.skip_validate_checkbox.setToolTip(
+            "跳过开始下载前连接 Hugging Face 校验仓库是 Model 还是 Dataset。\n"
+            "网络慢/代理不稳时校验常超时（约 20 秒）；勾选后立即进入下载。\n"
+            "请自行确认「类型」选择正确，否则可能下错或失败。"
+        )
         type_layout.addWidget(type_label)
         type_layout.addWidget(self.type_combo)
+        type_layout.addWidget(self.skip_validate_checkbox)
         type_layout.addStretch()
         layout.addLayout(type_layout)
 
@@ -585,6 +593,9 @@ class MainWindow(QMainWindow):
         )
         self._set_endpoint_combo_url(endpoint)
         self.endpoint_failover.setChecked(bool(data.get("endpoint_failover", True)))
+        self.skip_validate_checkbox.setChecked(
+            bool(data.get("skip_repo_validate", False))
+        )
 
         self.proxy_enabled.setChecked(bool(data["proxy_enabled"]))
         self.proxy_input.setText(data["proxy"] or "")
@@ -787,6 +798,7 @@ class MainWindow(QMainWindow):
             token=self.token_input.text().strip(),
             endpoint=self._current_endpoint_url(),
             endpoint_failover=self.endpoint_failover.isChecked(),
+            skip_repo_validate=self.skip_validate_checkbox.isChecked(),
             proxy=self.proxy_input.text().strip(),
             proxy_enabled=self.proxy_enabled.isChecked(),
             auto_retry=self.auto_retry_checkbox.isChecked(),
@@ -1230,7 +1242,8 @@ class MainWindow(QMainWindow):
             endpoints,
             bool(proxy),
         )
-        self._start_download_job(clear_log=True, skip_validation=False)
+        skip_val = self.skip_validate_checkbox.isChecked()
+        self._start_download_job(clear_log=True, skip_validation=skip_val)
 
     def _start_download_job(self, *, clear_log: bool, skip_validation: bool):
         if not self._download_params:

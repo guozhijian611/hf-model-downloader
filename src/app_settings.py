@@ -15,6 +15,7 @@ KEY_SAVE_PATH = "save_path"
 KEY_TOKEN = "token"
 KEY_ENDPOINT = "endpoint"
 KEY_ENDPOINT_FAILOVER = "endpoint_failover"
+KEY_SKIP_REPO_VALIDATE = "skip_repo_validate"
 KEY_PROXY = "proxy"
 KEY_PROXY_ENABLED = "proxy_enabled"
 KEY_AUTO_RETRY = "auto_retry"
@@ -48,6 +49,7 @@ def load_form_settings() -> dict:
         KEY_TOKEN: s.value(KEY_TOKEN, "", type=str),
         KEY_ENDPOINT: s.value(KEY_ENDPOINT, "https://hf-mirror.com", type=str),
         KEY_ENDPOINT_FAILOVER: s.value(KEY_ENDPOINT_FAILOVER, True, type=bool),
+        KEY_SKIP_REPO_VALIDATE: s.value(KEY_SKIP_REPO_VALIDATE, False, type=bool),
         KEY_PROXY: s.value(KEY_PROXY, "", type=str),
         KEY_PROXY_ENABLED: s.value(KEY_PROXY_ENABLED, False, type=bool),
         KEY_AUTO_RETRY: s.value(KEY_AUTO_RETRY, True, type=bool),
@@ -84,6 +86,7 @@ def save_form_settings(
     auto_retry: bool = True,
     retry_wait_sec: int = 5,
     endpoint_failover: bool = True,
+    skip_repo_validate: bool = False,
     download_backend: str = "huggingface-hub",
     stall_restart: bool = True,
     stall_timeout_sec: int = 120,
@@ -105,6 +108,7 @@ def save_form_settings(
     s.setValue(KEY_TOKEN, token)
     s.setValue(KEY_ENDPOINT, endpoint)
     s.setValue(KEY_ENDPOINT_FAILOVER, endpoint_failover)
+    s.setValue(KEY_SKIP_REPO_VALIDATE, bool(skip_repo_validate))
     s.setValue(KEY_PROXY, proxy)
     s.setValue(KEY_PROXY_ENABLED, proxy_enabled)
     s.setValue(KEY_AUTO_RETRY, auto_retry)
