@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.26.4 (2026-07-30)
+
+### Bug Fixes
+
+- **hfd**: Kill bash/aria2 process tree on stop
+  ([`7d00c9a`](https://github.com/guozhijian611/hf-model-downloader/commit/7d00c9ab6065899ac922e38101def60853bc2ae8))
+
+
 ## v0.26.3 (2026-07-30)
 
 ### Bug Fixes
