@@ -227,6 +227,8 @@ class UnifiedDownloadWorker(QThread):
         self.repo_dir = os.path.join(self.save_path, self.repo_name)
 
         self._cancel_event = threading.Event()
+        # Sticky across endpoint failover; Event alone is cleared/replaced and races.
+        self._user_cancel_requested = False
         self._download_process = None
         self._pipe_reader = None
         self._pipe_writer = None
@@ -236,9 +238,26 @@ class UnifiedDownloadWorker(QThread):
     def _safe_emit(self, signal_name: str, *args):
         return self._signal_emitter.safe_emit(signal_name, *args)
 
+    def _is_cancel_requested(self) -> bool:
+        """True when user (or stall) asked to stop — sticky, not just the Event."""
+        if getattr(self, "_user_cancel_requested", False):
+            return True
+        try:
+            if self._cancel_event.is_set():
+                return True
+        except Exception:
+            pass
+        try:
+            if self.isInterruptionRequested():
+                return True
+        except Exception:
+            pass
+        return False
+
     def run(self):
         try:
             self._is_running = True
+            self._user_cancel_requested = False
             self._cancel_event.clear()
             self._run()
         except Exception as e:
@@ -302,30 +321,32 @@ class UnifiedDownloadWorker(QThread):
                     self._logger.warning("清理 hfd 残留进程失败：%s", e)
 
     def cancel_download(self):
+        # Sticky cancel first so the endpoint loop cannot "failover" after kill.
+        self._user_cancel_requested = True
+        try:
+            self._cancel_event.set()
+        except Exception:
+            pass
+        try:
+            self.requestInterruption()
+        except Exception:
+            pass
+
         if not self.isRunning():
             # Even if the QThread finished, sweep orphaned hfd/aria2 workers.
             if getattr(self, "backend", "") == "hfd":
                 kill_hfd_related_processes(getattr(self, "repo_dir", None))
             return
 
-        self._cancel_event.set()
-
-        if self._output_thread and self._output_thread.is_alive():
-            try:
-                self._output_thread.join(timeout=1.0)
-            except Exception as e:
-                self._logger.error(f"停止输出线程失败：{e}")
-
         self._stop_download_process(reason="user_cancel")
 
-        if hasattr(self, "_signal_emitter"):
-            self._signal_emitter.invalidate()
-
-        self.cleanup()
-        self._is_running = False
-        # Request thread exit without creating timers from odd contexts.
-        self.requestInterruption()
-        self.quit()
+        # Do NOT cleanup()/close pipes here — the worker thread still owns them.
+        # Closing early causes WinError 6 (invalid handle) in the pipe reader and
+        # can race with endpoint failover logic. Final cleanup is in _run.finally.
+        try:
+            self.quit()
+        except Exception:
+            pass
 
     def _run(self):
         platform_cn = platform_label(self.platform)
@@ -395,8 +416,11 @@ class UnifiedDownloadWorker(QThread):
             last_exitcode = None
 
             for ep_index, endpoint in enumerate(self.endpoints):
-                if self._cancel_event.is_set() or self.isInterruptionRequested():
+                # Always re-check sticky cancel (UI may kill the process from
+                # another thread; exitcode alone must not trigger failover).
+                if self._is_cancel_requested():
                     user_cancelled = True
+                    self._logger.info("取消已请求，跳过后续 Endpoint")
                     break
 
                 self.endpoint = endpoint
@@ -407,10 +431,13 @@ class UnifiedDownloadWorker(QThread):
                 )
                 self._safe_emit("download_log", f"当前 Endpoint：{endpoint}")
 
-                # Fresh cancel flag for pipe reader only between endpoints.
-                # Keep user cancel via the same event; reset only if not user cancel.
-                if not user_cancelled:
-                    self._cancel_event.clear()
+                # Only clear the Event between endpoints when NOT cancelling.
+                # Never clear sticky _user_cancel_requested here.
+                if not self._is_cancel_requested():
+                    try:
+                        self._cancel_event.clear()
+                    except Exception:
+                        pass
 
                 self._pipe_reader, self._pipe_writer = multiprocessing.Pipe(
                     duplex=False
@@ -441,6 +468,11 @@ class UnifiedDownloadWorker(QThread):
                 self._safe_emit("download_log", "下载进程已启动，等待数据传输...")
 
                 while True:
+                    if self._is_cancel_requested():
+                        user_cancelled = True
+                        self._logger.info("检测到取消请求，正在终止下载进程")
+                        self._stop_download_process(reason="cancel_loop")
+                        break
                     proc = self._download_process
                     if proc is None:
                         break
@@ -449,15 +481,15 @@ class UnifiedDownloadWorker(QThread):
                             break
                     except (ValueError, AssertionError, OSError):
                         break
-                    if self._cancel_event.is_set() or self.isInterruptionRequested():
-                        user_cancelled = True
-                        self._logger.info("检测到取消请求，正在终止下载进程")
-                        self._stop_download_process(reason="cancel_loop")
-                        break
                     try:
                         proc.join(timeout=0.1)
                     except Exception:
                         time.sleep(0.1)
+
+                # If UI killed the process first, is_alive became false without
+                # entering the cancel branch — still treat as user cancel.
+                if self._is_cancel_requested():
+                    user_cancelled = True
 
                 proc = self._download_process
                 try:
@@ -465,13 +497,40 @@ class UnifiedDownloadWorker(QThread):
                 except Exception:
                     pass
                 # Ensure tree is dead after cancel (and clear residual hfd workers).
-                if user_cancelled:
+                if user_cancelled or self._is_cancel_requested():
+                    user_cancelled = True
                     self._stop_download_process(reason="post_cancel")
-                self._cancel_event.set()
+                try:
+                    self._cancel_event.set()
+                except Exception:
+                    pass
                 if self._output_thread:
                     self._output_thread.join(timeout=2.0)
                 self._output_thread = None
+                # Close pipes after reader stops (avoid WinError 6 races).
+                try:
+                    if self._pipe_reader is not None:
+                        self._pipe_reader.close()
+                except Exception:
+                    pass
+                try:
+                    if self._pipe_writer is not None:
+                        self._pipe_writer.close()
+                except Exception:
+                    pass
+                self._pipe_reader = None
+                self._pipe_writer = None
                 self._download_process = None
+
+                if user_cancelled or self._is_cancel_requested():
+                    user_cancelled = True
+                    self._logger.info(
+                        "%s Endpoint %s 因取消结束（退出码：%s）",
+                        platform_cn,
+                        endpoint,
+                        last_exitcode,
+                    )
+                    break
 
                 if last_exitcode == 0:
                     download_completed = True
@@ -480,15 +539,17 @@ class UnifiedDownloadWorker(QThread):
                 self._logger.info(
                     f"{platform_cn} Endpoint {endpoint} 退出码：{last_exitcode}"
                 )
-                if user_cancelled:
-                    break
                 if ep_index + 1 < len(self.endpoints):
+                    if self._is_cancel_requested():
+                        user_cancelled = True
+                        break
                     self._safe_emit(
                         "download_log",
                         f"Endpoint 失败，切换下一个：{self.endpoints[ep_index + 1]}",
                     )
-                    # Allow next attempt to run the pipe loop.
-                    self._cancel_event = threading.Event()
+                    # Fresh Event for next attempt only (sticky cancel stays).
+                    if not self._is_cancel_requested():
+                        self._cancel_event = threading.Event()
 
             if download_completed:
                 cleanup_lock_files(self.repo_dir)
@@ -498,7 +559,7 @@ class UnifiedDownloadWorker(QThread):
                 )
                 self._logger.info(f"{platform_cn} 下载成功")
                 self._safe_emit("download_finished")
-            elif user_cancelled:
+            elif user_cancelled or self._is_cancel_requested():
                 raise Exception("用户已取消下载")
             else:
                 detail = ""
@@ -531,11 +592,14 @@ class UnifiedDownloadWorker(QThread):
             self.cleanup()
 
     def _process_pipe_output(self):
-        while not self._cancel_event.is_set():
+        while not self._is_cancel_requested():
+            reader = self._pipe_reader
+            if reader is None:
+                break
             try:
-                if self._pipe_reader and self._pipe_reader.poll(0.01):
+                if reader.poll(0.01):
                     try:
-                        output = self._pipe_reader.recv()
+                        output = reader.recv()
                         if output == "DOWNLOAD_COMPLETE":
                             break
                         text = str(output)
@@ -547,10 +611,24 @@ class UnifiedDownloadWorker(QThread):
                         self._safe_emit("download_log", text)
                     except EOFError:
                         break
+                    except (OSError, BrokenPipeError, ValueError) as e:
+                        # WinError 6 invalid handle after cancel closes the pipe.
+                        if self._is_cancel_requested():
+                            break
+                        self._logger.debug("管道读取结束：%s", e)
+                        break
                     except Exception as e:
+                        if self._is_cancel_requested():
+                            break
                         self._logger.error(f"处理下载输出失败：{e}")
                         continue
+            except (OSError, BrokenPipeError, ValueError) as e:
+                if not self._is_cancel_requested():
+                    self._logger.debug("读取下载输出管道结束：%s", e)
+                break
             except Exception as e:
+                if self._is_cancel_requested():
+                    break
                 self._logger.error(f"读取下载输出管道失败：{e}")
                 break
 
