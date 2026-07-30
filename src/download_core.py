@@ -749,10 +749,21 @@ def unified_download_model(
                     pipe.send("下载被系统信号中断")
                 except Exception:
                     pass
+            # Tear down hfd grandchildren (bash/aria2) before this worker exits.
+            try:
+                from .utils import kill_process_tree
+
+                kill_process_tree(os.getpid(), grace_sec=1.0, include_root=False)
+            except Exception:
+                pass
             sys.exit(1)
 
-        signal.signal(signal.SIGTERM, signal_handler)
-        signal.signal(signal.SIGINT, signal_handler)
+        # SIGTERM may not run on Windows TerminateProcess; parent still kills the tree.
+        try:
+            signal.signal(signal.SIGTERM, signal_handler)
+            signal.signal(signal.SIGINT, signal_handler)
+        except (ValueError, OSError):
+            pass
 
         try:
             if platform == "huggingface":

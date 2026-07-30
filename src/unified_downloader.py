@@ -31,7 +31,12 @@ from .download_core import (  # noqa: F401
 from .hf_hub_env import clear_hf_download_env, configure_hf_hub_http, hf_api_client
 from .hf_repo_validate import DEFAULT_VALIDATE_TIMEOUT_SEC, validate_hf_repo_type
 from .proxy_env import normalize_proxy
-from .utils import cleanup_environment, cleanup_lock_files
+from .utils import (
+    cleanup_environment,
+    cleanup_lock_files,
+    kill_hfd_related_processes,
+    kill_process_tree,
+)
 
 
 class LoggerManager:
@@ -245,8 +250,62 @@ class UnifiedDownloadWorker(QThread):
         finally:
             self._is_running = False
 
+    def _stop_download_process(self, *, reason: str = "cancel") -> None:
+        """
+        Stop the spawn download worker and its whole process tree.
+
+        hfd runs bash → aria2c as grandchildren; a plain Process.terminate()
+        leaves them orphaned on Windows.
+        """
+        proc = self._download_process
+        if proc is None:
+            # Still sweep residual hfd/aria2 for this repo (prior orphans).
+            if getattr(self, "backend", "") == "hfd":
+                kill_hfd_related_processes(getattr(self, "repo_dir", None))
+            return
+
+        pid = getattr(proc, "pid", None)
+        try:
+            alive = False
+            try:
+                alive = proc.is_alive()
+            except (ValueError, AssertionError, OSError):
+                alive = False
+
+            if alive or pid:
+                self._logger.info(
+                    "终止下载进程树（%s）pid=%s backend=%s",
+                    reason,
+                    pid,
+                    getattr(self, "backend", ""),
+                )
+                kill_process_tree(pid, grace_sec=2.0)
+                try:
+                    proc.join(timeout=2.0)
+                except Exception:
+                    pass
+                try:
+                    if proc.is_alive():
+                        proc.kill()
+                        kill_process_tree(pid, grace_sec=1.0)
+                        proc.join(timeout=1.0)
+                except (ValueError, AssertionError, OSError, ProcessLookupError):
+                    pass
+        except Exception as e:
+            self._logger.error("终止下载进程失败：%s", e)
+        finally:
+            # hfd safety net: orphans from incomplete trees or prior runs.
+            if getattr(self, "backend", "") == "hfd":
+                try:
+                    kill_hfd_related_processes(getattr(self, "repo_dir", None))
+                except Exception as e:
+                    self._logger.warning("清理 hfd 残留进程失败：%s", e)
+
     def cancel_download(self):
         if not self.isRunning():
+            # Even if the QThread finished, sweep orphaned hfd/aria2 workers.
+            if getattr(self, "backend", "") == "hfd":
+                kill_hfd_related_processes(getattr(self, "repo_dir", None))
             return
 
         self._cancel_event.set()
@@ -257,21 +316,7 @@ class UnifiedDownloadWorker(QThread):
             except Exception as e:
                 self._logger.error(f"停止输出线程失败：{e}")
 
-        if self._download_process and self._download_process.is_alive():
-            try:
-                self._download_process.terminate()
-                for _ in range(30):
-                    if not self._download_process.is_alive():
-                        break
-                    time.sleep(0.1)
-                if self._download_process.is_alive():
-                    try:
-                        self._download_process.kill()
-                        time.sleep(0.1)
-                    except (OSError, ProcessLookupError):
-                        pass
-            except Exception as e:
-                self._logger.error(f"终止下载进程失败：{e}")
+        self._stop_download_process(reason="user_cancel")
 
         if hasattr(self, "_signal_emitter"):
             self._signal_emitter.invalidate()
@@ -395,15 +440,33 @@ class UnifiedDownloadWorker(QThread):
                 self._download_process.start()
                 self._safe_emit("download_log", "下载进程已启动，等待数据传输...")
 
-                while self._download_process.is_alive():
+                while True:
+                    proc = self._download_process
+                    if proc is None:
+                        break
+                    try:
+                        if not proc.is_alive():
+                            break
+                    except (ValueError, AssertionError, OSError):
+                        break
                     if self._cancel_event.is_set() or self.isInterruptionRequested():
                         user_cancelled = True
                         self._logger.info("检测到取消请求，正在终止下载进程")
-                        self._download_process.terminate()
+                        self._stop_download_process(reason="cancel_loop")
                         break
-                    self._download_process.join(timeout=0.1)
+                    try:
+                        proc.join(timeout=0.1)
+                    except Exception:
+                        time.sleep(0.1)
 
-                last_exitcode = self._download_process.exitcode
+                proc = self._download_process
+                try:
+                    last_exitcode = proc.exitcode if proc is not None else last_exitcode
+                except Exception:
+                    pass
+                # Ensure tree is dead after cancel (and clear residual hfd workers).
+                if user_cancelled:
+                    self._stop_download_process(reason="post_cancel")
                 self._cancel_event.set()
                 if self._output_thread:
                     self._output_thread.join(timeout=2.0)

@@ -778,20 +778,43 @@ def download_with_hfd(
         pipe.send(f"并发：-x {threads}（单文件连接） -j {jobs}（并行文件）")
         pipe.send(f"命令：{' '.join(cmd[:6])} … --local-dir {repo_dir}")
 
+    popen_kwargs: dict = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "env": env,
+        "bufsize": 0,
+    }
+    # Own process group so we can tear down bash → aria2c together.
+    if sys.platform.startswith("win"):
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
+
     try:
         # Binary + unbuffered so \r progress ("Listing files… N scanned")
         # reaches the UI promptly and does not trip the stall watchdog.
-        proc = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            env=env,
-            bufsize=0,
-        )
+        proc = subprocess.Popen(cmd, **popen_kwargs)
     except OSError as exc:
         _abort_download(pipe, f"无法启动 hfd：{exc}")
 
     assert proc.stdout is not None
+
+    def _stop_hfd_proc() -> None:
+        """Kill bash and all descendants (aria2c), not just the shell."""
+        from .utils import kill_hfd_related_processes, kill_process_tree
+
+        if proc.poll() is None:
+            kill_process_tree(proc.pid, grace_sec=2.0)
+            try:
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+        # Residual aria2 for this local-dir (Windows orphan edge cases).
+        kill_hfd_related_processes(repo_dir)
+
     try:
         buf = b""
         while True:
@@ -831,14 +854,21 @@ def download_with_hfd(
                     print(line, flush=True)
         code = proc.wait()
     except KeyboardInterrupt:
-        proc.terminate()
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+        _stop_hfd_proc()
         _abort_download(pipe, "用户已取消下载")
+    except BaseException:
+        # Ensure aria2 does not survive unexpected worker death.
+        _stop_hfd_proc()
+        raise
 
     if code != 0:
+        # If bash exited uncleanly, aria2 may still be running on this folder.
+        try:
+            from .utils import kill_hfd_related_processes
+
+            kill_hfd_related_processes(repo_dir)
+        except Exception:
+            pass
         log_hint = os.path.join(repo_dir, ".hfd", "download.log")
         extra = f"（详见 {log_hint}）" if os.path.isfile(log_hint) else ""
         _abort_download(
