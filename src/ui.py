@@ -1293,6 +1293,8 @@ class MainWindow(QMainWindow):
                 )
             else:
                 self.update_status("下载方式：huggingface-hub（内置）")
+            if skip_validation:
+                self.update_status("已跳过仓库类型校验（按界面所选类型直接下载）")
             if len(eps) > 1:
                 self.update_status("Endpoint 顺序：" + " → ".join(eps))
             else:
