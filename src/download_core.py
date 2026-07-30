@@ -89,32 +89,100 @@ _PIPE_TQDM_LAST: dict[str, float] = {}
 _PIPE_TQDM_PIPE = None
 _PIPE_TQDM_STATS_LOCK = threading.Lock()
 _PIPE_TQDM_ACTIVE: dict[str, tuple[int, int]] = {}  # name -> (n, total)
+_PIPE_TQDM_REPO_DIR: str | None = None
+_PIPE_TQDM_MANUAL_N: dict[str, int] = {}  # fallback byte counter
 
 
-def _pipe_tqdm_reset(pipe) -> None:
-    global _PIPE_TQDM_PIPE
+def _pipe_tqdm_reset(pipe, repo_dir: str | None = None) -> None:
+    global _PIPE_TQDM_PIPE, _PIPE_TQDM_REPO_DIR
     with _PIPE_TQDM_LOCK:
         _PIPE_TQDM_PIPE = pipe
         _PIPE_TQDM_LAST.clear()
+        _PIPE_TQDM_MANUAL_N.clear()
+        _PIPE_TQDM_REPO_DIR = repo_dir
     with _PIPE_TQDM_STATS_LOCK:
         _PIPE_TQDM_ACTIVE.clear()
 
 
+def _file_bytes_on_disk(repo_dir: str, filename: str) -> int:
+    """Bytes already written for a hub local_dir download (final or .incomplete)."""
+    try:
+        from pathlib import Path as _Path
+
+        from huggingface_hub._local_folder import (  # type: ignore
+            _short_hash,
+            get_local_download_paths,
+        )
+
+        paths = get_local_download_paths(_Path(repo_dir), filename)
+        if paths.file_path.is_file():
+            return int(paths.file_path.stat().st_size)
+        parent = paths.metadata_path.parent
+        if not parent.is_dir():
+            return 0
+        prefix = _short_hash(paths.metadata_path.name)
+        best = 0
+        for p in parent.glob(f"{prefix}.*.incomplete"):
+            try:
+                best = max(best, int(p.stat().st_size))
+            except OSError:
+                continue
+        return best
+    except Exception:
+        # Fallback: final path only
+        try:
+            p = os.path.join(repo_dir, *filename.split("/"))
+            if os.path.isfile(p):
+                return int(os.path.getsize(p))
+            if os.path.isfile(p + ".incomplete"):
+                return int(os.path.getsize(p + ".incomplete"))
+        except OSError:
+            pass
+        return 0
+
+
+def _human_bytes(n: int) -> str:
+    n = float(max(0, n))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            if unit == "B":
+                return f"{int(n)}{unit}"
+            return f"{n:.2f}{unit}"
+        n /= 1024.0
+    return f"{n:.2f}TB"
+
+
 class PipeFileTqdm(tqdm):
-    """tqdm that reports structured per-file progress over the download pipe."""
+    """tqdm that reports structured per-file progress over the download pipe.
+
+    Also merges on-disk incomplete size because Xet/http paths sometimes leave
+    ``tqdm.n`` at 0 until a file finishes (UI looks stuck at 0%).
+    """
 
     def __init__(self, *args, **kwargs):
         kwargs = dict(kwargs)
         self._fname = str(kwargs.get("desc") or "file")
         # Never write multi-bar noise to stdout (pipe captures stdout too).
         kwargs["disable"] = True
-        kwargs["mininterval"] = 0.5
+        kwargs["mininterval"] = 0.25
         super().__init__(*args, **kwargs)
         self._last_human = 0.0
+        self._manual_n = int(kwargs.get("initial") or 0)
         self._emit(force=True)
 
     def update(self, n=1):
-        r = super().update(n)
+        try:
+            amount = 0 if n is None else int(n)
+        except (TypeError, ValueError):
+            amount = 0
+        if amount:
+            self._manual_n += amount
+            with _PIPE_TQDM_LOCK:
+                _PIPE_TQDM_MANUAL_N[self._fname] = self._manual_n
+        try:
+            r = super().update(n)
+        except Exception:
+            r = None
         self._emit()
         return r
 
@@ -124,13 +192,23 @@ class PipeFileTqdm(tqdm):
         finally:
             super().close()
 
+    def _resolved_n(self) -> int:
+        n = max(int(self.n or 0), int(self._manual_n or 0))
+        repo = _PIPE_TQDM_REPO_DIR
+        if repo:
+            try:
+                n = max(n, _file_bytes_on_disk(repo, self._fname))
+            except Exception:
+                pass
+        return n
+
     def _emit(self, force: bool = False, final: bool = False) -> None:
         pipe = _PIPE_TQDM_PIPE
         if not pipe:
             return
         now = time.monotonic()
         name = self._fname
-        n = int(self.n or 0)
+        n = self._resolved_n()
         total = int(self.total or 0)
         with _PIPE_TQDM_LOCK:
             last = _PIPE_TQDM_LAST.get(name, 0.0)
@@ -153,11 +231,11 @@ class PipeFileTqdm(tqdm):
             self._last_human = now
             try:
                 if total > 0:
-                    pct = 100.0 * n / total
-                    size_txt = f"{n}/{total}"
+                    pct = min(100.0, 100.0 * n / total)
+                    size_txt = f"{_human_bytes(n)}/{_human_bytes(total)}"
                 else:
                     pct = 0.0
-                    size_txt = str(n)
+                    size_txt = _human_bytes(n)
                 short = name if len(name) <= 48 else ("…" + name[-47:])
                 pipe.send(
                     f"文件 [{active}并发] {short}: {pct:.1f}% ({size_txt})"
@@ -411,16 +489,75 @@ def _download_hf_parallel_with_file_progress(
         os.makedirs(repo_dir, exist_ok=True)
         return repo_dir
 
-    _pipe_tqdm_reset(pipe)
+    _pipe_tqdm_reset(pipe, repo_dir=repo_dir)
     os.makedirs(repo_dir, exist_ok=True)
 
     errors: list[str] = []
     errors_lock = threading.Lock()
     completed = 0
     completed_lock = threading.Lock()
+    stop_poll = threading.Event()
+
+    def _disk_progress_poller() -> None:
+        """Xet/http sometimes leave tqdm.n at 0; poll .incomplete sizes instead."""
+        while not stop_poll.wait(1.0):
+            pipe_ref = _PIPE_TQDM_PIPE
+            if not pipe_ref:
+                continue
+            with _PIPE_TQDM_STATS_LOCK:
+                items = list(_PIPE_TQDM_ACTIVE.items())
+            if not items:
+                # Also discover incomplete files not yet in ACTIVE
+                try:
+                    cache = os.path.join(repo_dir, ".cache", "huggingface", "download")
+                    if os.path.isdir(cache):
+                        # At least emit overall sum of incomplete bytes
+                        total_inc = 0
+                        count_inc = 0
+                        for root, _dirs, names in os.walk(cache):
+                            for name in names:
+                                if name.endswith(".incomplete"):
+                                    try:
+                                        total_inc += os.path.getsize(
+                                            os.path.join(root, name)
+                                        )
+                                        count_inc += 1
+                                    except OSError:
+                                        pass
+                        if count_inc and pipe_ref:
+                            try:
+                                pipe_ref.send(
+                                    f"磁盘缓存中 incomplete：{count_inc} 个，"
+                                    f"合计 {_human_bytes(total_inc)}"
+                                )
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+                continue
+            for fname, (_old_n, total) in items:
+                try:
+                    n = _file_bytes_on_disk(repo_dir, fname)
+                except Exception:
+                    continue
+                if n <= 0:
+                    continue
+                status = "done" if total > 0 and n >= total else "downloading"
+                try:
+                    pipe_ref.send(f"[HF_FILE]\t{fname}\t{n}\t{total}\t{status}")
+                except Exception:
+                    return
+
+    poller = threading.Thread(
+        target=_disk_progress_poller, name="hf-disk-progress", daemon=True
+    )
+    poller.start()
 
     def _one(filename: str) -> str:
         nonlocal completed
+        # Register as active early so disk poller can track incomplete size
+        with _PIPE_TQDM_STATS_LOCK:
+            _PIPE_TQDM_ACTIVE[filename] = (0, 0)
         path = hf_hub_download(
             repo_id=model_id,
             filename=filename,
@@ -433,9 +570,18 @@ def _download_hf_parallel_with_file_progress(
             etag_timeout=60,
             tqdm_class=PipeFileTqdm,
         )
+        # Final size report
+        try:
+            final_n = _file_bytes_on_disk(repo_dir, filename)
+            if pipe and final_n > 0:
+                pipe.send(f"[HF_FILE]\t{filename}\t{final_n}\t{final_n}\tdone")
+        except Exception:
+            pass
         with completed_lock:
             completed += 1
             done_n = completed
+        with _PIPE_TQDM_STATS_LOCK:
+            _PIPE_TQDM_ACTIVE.pop(filename, None)
         if pipe and (done_n % 10 == 0 or done_n == len(files) or done_n <= 3):
             try:
                 pipe.send(f"已完成文件 {done_n}/{len(files)}：{filename}")
@@ -444,20 +590,26 @@ def _download_hf_parallel_with_file_progress(
         return path
 
     workers = max(1, min(int(max_workers), 32, len(files)))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_one, f): f for f in files}
-        for fut in as_completed(futures):
-            name = futures[fut]
-            try:
-                fut.result()
-            except Exception as exc:
-                with errors_lock:
-                    errors.append(f"{name}: {exc}")
-                if pipe:
-                    try:
-                        pipe.send(f"错误：文件下载失败 {name}：{exc}")
-                    except Exception:
-                        pass
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_one, f): f for f in files}
+            for fut in as_completed(futures):
+                name = futures[fut]
+                try:
+                    fut.result()
+                except Exception as exc:
+                    with errors_lock:
+                        errors.append(f"{name}: {exc}")
+                    if pipe:
+                        try:
+                            pipe.send(f"错误：文件下载失败 {name}：{exc}")
+                        except Exception:
+                            pass
+                    with _PIPE_TQDM_STATS_LOCK:
+                        _PIPE_TQDM_ACTIVE.pop(name, None)
+    finally:
+        stop_poll.set()
+        poller.join(timeout=2.0)
 
     if errors:
         sample = "\n".join(errors[:8])
