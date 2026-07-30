@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.26.5 (2026-07-30)
+
+### Bug Fixes
+
+- **hfd**: Sticky cancel so stop does not failover endpoints
+  ([`38015d0`](https://github.com/guozhijian611/hf-model-downloader/commit/38015d0fb464ee459e7d52d200bd8622faaf7f6f))
+
+
 ## v0.26.4 (2026-07-30)
 
 ### Bug Fixes
