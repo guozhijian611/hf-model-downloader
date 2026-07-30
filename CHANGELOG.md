@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.26.2 (2026-07-30)
+
+### Bug Fixes
+
+- Keep file progress table rows stable by name
+  ([`c755aae`](https://github.com/guozhijian611/hf-model-downloader/commit/c755aaec4bbd7c70ea9a65a77df236a603735235))
+
+
 ## v0.26.1 (2026-07-30)
 
 ### Bug Fixes
