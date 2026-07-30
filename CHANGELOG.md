@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.26.1 (2026-07-30)
+
+### Bug Fixes
+
+- Show real per-file progress from disk incomplete sizes
+  ([`4a81387`](https://github.com/guozhijian611/hf-model-downloader/commit/4a8138750864bfa5d0864e556b0e0731a3d66ac1))
+
+
 ## v0.26.0 (2026-07-30)
 
 ### Chores
