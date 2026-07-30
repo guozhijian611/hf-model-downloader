@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.27.0 (2026-07-30)
+
+### Features
+
+- **monitor**: Live-tail aria2/hfd download.log for 403/SSL
+  ([`78fa654`](https://github.com/guozhijian611/hf-model-downloader/commit/78fa654b403af1b3d20af19549ae00d6d331aed9))
+
+
 ## v0.26.5 (2026-07-30)
 
 ### Bug Fixes
