@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.28.0 (2026-07-30)
+
+### Features
+
+- **ui**: Hover tooltips for all download parameters
+  ([`cec5b1e`](https://github.com/guozhijian611/hf-model-downloader/commit/cec5b1e281f3545f1af254428c5719807bce8751))
+
+
 ## v0.27.0 (2026-07-30)
 
 ### Features
