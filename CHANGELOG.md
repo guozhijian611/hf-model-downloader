@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.25.0 (2026-07-30)
+
+### Features
+
+- Install jq for hfd and fix listing stall false positives
+  ([`ae4a862`](https://github.com/guozhijian611/hf-model-downloader/commit/ae4a8622e78c218a18fa0dde8886685d8d0152ff))
+
+
 ## v0.24.0 (2026-07-29)
 
 ### Features
