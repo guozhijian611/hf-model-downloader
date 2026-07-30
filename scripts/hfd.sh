@@ -208,6 +208,16 @@ siblings_complete() {
     (( ${n:-0} > 0 )) && [[ "${s:-0}" == "$REPO_SIZE" ]]
 }
 
+# Many large datasets expose a full siblings[] path list but with size=0 (no blob sizes in
+# metadata). Size-sum then never matches treesize, and the old logic forced a multi-thousand-page
+# tree walk that looks "stuck" around mid-list. Prefer siblings when the path list is non-empty.
+siblings_usable() {
+    command -v jq &>/dev/null || return 1
+    local n
+    n=$(jq -r '(.siblings // []) | length' "$METADATA_FILE" 2>/dev/null) || n=0
+    (( ${n:-0} > 0 ))
+}
+
 # Keep only "size<TAB>path" stdin lines matching include/exclude (the *_REGEX globals).
 filter_size_path() {
     local size path
@@ -298,13 +308,24 @@ if should_regenerate_filelist; then
     INCLUDE_REGEX=$(patterns_to_regex "${INCLUDE_PATTERNS[@]}")
     EXCLUDE_REGEX=$(patterns_to_regex "${EXCLUDE_PATTERNS[@]}")
     printf "%bListing files...%b" "$DIM" "$NC"
-    # Fast path: typical repos return their whole file list in the metadata; only big repos
-    # (truncated siblings) need the paginated, resumable tree walk.
+    # Fast path: use metadata siblings[] when available (even if per-file sizes are 0).
+    # Only fall back to paginated tree walk when siblings is empty/missing — that walk is
+    # very slow for 10k+ file datasets and often appears stuck after a few thousand pages.
     if siblings_complete; then
+        printf "\r\033[K%bUsing complete metadata file list (with sizes)%b\n" "$DIM" "$NC"
+        rm -f "$LOCAL_DIR/.hfd/list_state"
+        emit_siblings | filter_size_path > "$LOCAL_DIR/.hfd/manifest.partial"
+        gen_status=${PIPESTATUS[0]}
+    elif siblings_usable; then
+        n_sib=$(jq -r '(.siblings // []) | length' "$METADATA_FILE" 2>/dev/null || echo 0)
+        printf "\r\033[K%bUsing metadata siblings (%s files; sizes may be 0 — skip slow tree walk)%b\n" \
+            "$DIM" "$n_sib" "$NC"
         rm -f "$LOCAL_DIR/.hfd/list_state"
         emit_siblings | filter_size_path > "$LOCAL_DIR/.hfd/manifest.partial"
         gen_status=${PIPESTATUS[0]}
     else
+        printf "\r\033[K%bNo siblings in metadata; walking repo tree (slow on huge datasets)…%b\n" \
+            "$DIM" "$NC"
         walk_tree; gen_status=$?
     fi
     # A failed walk keeps its checkpoint (list_state + manifest.partial), so a re-run resumes.
