@@ -735,9 +735,9 @@ def download_with_hfd(
         "--tool",
         tool,
         "-x",
-        str(max(1, min(int(threads), 16))),
+        str(max(1, min(int(threads), 32))),
         "-j",
-        str(max(1, min(int(jobs), 32))),
+        str(max(1, min(int(jobs), 256))),
         "--local-dir",
         repo_dir,
     ]

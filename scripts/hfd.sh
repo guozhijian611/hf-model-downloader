@@ -78,8 +78,8 @@ while [[ $# -gt 0 ]]; do
             [[ "$2" == aria2c || "$2" == wget ]] || { printf "%b[Error] Invalid tool. Use 'aria2c' or 'wget'.%b\n" "$RED" "$NC"; exit 1; }
             TOOL="$2"; shift 2 ;;
         # Caps raised so GUI can pass higher values; user chooses tradeoff.
-        -x) validate_number "threads (-x)" "$2" 16; THREADS="$2"; shift 2 ;;
-        -j) validate_number "concurrent downloads (-j)" "$2" 32; CONCURRENT="$2"; shift 2 ;;
+        -x) validate_number "threads (-x)" "$2" 32; THREADS="$2"; shift 2 ;;
+        -j) validate_number "concurrent downloads (-j)" "$2" 256; CONCURRENT="$2"; shift 2 ;;
         --dataset) DATASET=1; shift ;;
         --local-dir) LOCAL_DIR="$2"; shift 2 ;;
         --revision) REVISION="$2"; shift 2 ;;

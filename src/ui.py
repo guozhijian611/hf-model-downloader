@@ -582,11 +582,11 @@ class MainWindow(QMainWindow):
         self.hub_workers_spin.setValue(8)
         hfd_x_label = QLabel("hfd连接-x")
         self.hfd_threads_spin = QSpinBox()
-        self.hfd_threads_spin.setRange(1, 16)
+        self.hfd_threads_spin.setRange(1, 32)
         self.hfd_threads_spin.setValue(4)
         hfd_j_label = QLabel("hfd任务-j")
         self.hfd_jobs_spin = QSpinBox()
-        self.hfd_jobs_spin.setRange(1, 32)
+        self.hfd_jobs_spin.setRange(1, 256)
         self.hfd_jobs_spin.setValue(8)
         _tip(
             conc_title,
@@ -608,7 +608,7 @@ class MainWindow(QMainWindow):
                 "【仅 hfd/aria2 后端】单文件分片连接数（aria2 -x 与 -s）\n"
                 "提高可加快单个大文件；由你自行配置，程序不会强制改写\n"
                 "若 HF Xet CDN 日志里大量 status=403，可降到 1～2\n"
-                "范围 1～16。选 hub 后端时此值不生效"
+                "范围 1～32。选 hub 后端时此值不生效"
             ),
         )
         _tip(
@@ -617,7 +617,7 @@ class MainWindow(QMainWindow):
             text=(
                 "【仅 hfd/aria2 后端】同时下载的文件数（aria2 -j）\n"
                 "多文件仓库可提高以吃满带宽；过高可能限流或代理拥堵\n"
-                "由你自行配置。范围 1～32。选 hub 后端时此值不生效"
+                "由你自行配置。范围 1～256。选 hub 后端时此值不生效"
             ),
         )
         concurrency_layout.addWidget(conc_title)
@@ -814,9 +814,9 @@ class MainWindow(QMainWindow):
             max(1, min(32, int(data.get("hub_max_workers") or 8)))
         )
         self.hfd_threads_spin.setValue(
-            max(1, min(16, int(data.get("hfd_threads") or 4)))
+            max(1, min(32, int(data.get("hfd_threads") or 4)))
         )
-        self.hfd_jobs_spin.setValue(max(1, min(32, int(data.get("hfd_jobs") or 8))))
+        self.hfd_jobs_spin.setValue(max(1, min(256, int(data.get("hfd_jobs") or 8))))
 
         backend = data.get("download_backend") or BACKEND_HUB
         idx = self.backend_combo.findData(backend)
