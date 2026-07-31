@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.29.0 (2026-07-31)
+
+### Features
+
+- **hfd**: Raise -j concurrency cap to 256
+  ([`ef9e9e8`](https://github.com/guozhijian611/hf-model-downloader/commit/ef9e9e811f371c2ac115e139ce92b7486d99bb49))
+
+
 ## v0.28.0 (2026-07-30)
 
 ### Features
