@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v0.30.0 (2026-07-31)
+
+### Features
+
+- **monitor**: Drop file progress; collapsible net and log panels
+  ([`808a0d8`](https://github.com/guozhijian611/hf-model-downloader/commit/808a0d8b5c3bc044ad92261521eda7a45d6bf9c7))
+
+
 ## v0.29.0 (2026-07-31)
 
 ### Features
