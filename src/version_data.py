@@ -1,3 +1,3 @@
 """Generated app version — keep in sync with pyproject.toml via build.py."""
 
-__version__ = "0.27.0"
+__version__ = "0.29.0"

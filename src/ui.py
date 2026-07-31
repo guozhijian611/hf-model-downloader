@@ -272,9 +272,8 @@ class MainWindow(QMainWindow):
             self.monitor_btn,
             text=(
                 "打开/关闭右侧监控窗：\n"
-                "· 网速曲线\n"
-                "· 文件进度\n"
-                "· aria2/hfd 错误日志实时刷新（403/SSL 等）"
+                "· 网络/磁盘速度与折线图（可折叠）\n"
+                "· aria2/hfd 错误日志实时刷新（可折叠）"
             ),
         )
 
@@ -831,7 +830,6 @@ class MainWindow(QMainWindow):
         mw.net_panel.set_history_seconds(max(60, min(3 * 24 * 3600, hist)))
         mw.net_panel.set_selected_interface(str(data.get("net_monitor_iface") or ""))
         mw.net_panel.set_expanded(True)
-        mw.file_panel.set_expanded(True)
         if data.get("monitor_window_open"):
             # Defer so main geometry is ready
             QTimer.singleShot(200, self.show_monitor_window)
@@ -1473,15 +1471,8 @@ class MainWindow(QMainWindow):
                 )
                 self._monitor_window.set_watch_path(save_path)
                 self._monitor_window.set_repo_dir(repo_dir)
-                self._monitor_window.file_panel.set_scan_root(
-                    save_path, repo_id=repo_id
-                )
-                # Only auto-open if user already had it open / wants it
-                if self._monitor_window.isVisible():
-                    self._monitor_window.start_session(reset=bool(clear_log))
-                else:
-                    # Soft-start session stats without forcing window open
-                    self._monitor_window.start_session(reset=bool(clear_log))
+                # Soft-start session stats (net chart + hfd log tail)
+                self._monitor_window.start_session(reset=bool(clear_log))
             except Exception:
                 logger.exception("Failed to prepare monitor window")
 

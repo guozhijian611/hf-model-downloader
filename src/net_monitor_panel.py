@@ -171,9 +171,9 @@ class NetMonitorPanel(QFrame):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
 
-        # Header / toolbar
+        # Header / toolbar (toggle collapses cards + chart)
         header = QHBoxLayout()
-        self.toggle_btn = QPushButton("网络 / 磁盘")
+        self.toggle_btn = QPushButton("▼ 网络 / 磁盘")
         self.toggle_btn.setFlat(True)
         self.toggle_btn.setCheckable(True)
         self.toggle_btn.setChecked(True)
@@ -181,6 +181,7 @@ class NetMonitorPanel(QFrame):
             "QPushButton { font-weight: 600; text-align: left; border: none; "
             "font-size: 13px; color: #222; }"
         )
+        self.toggle_btn.setToolTip("点击展开/收起网速、磁盘与折线图")
         self.toggle_btn.toggled.connect(self._on_toggle_body)
         header.addWidget(self.toggle_btn)
 
@@ -293,7 +294,11 @@ class NetMonitorPanel(QFrame):
         return self.toggle_btn.isChecked()
 
     def set_expanded(self, expanded: bool) -> None:
-        self.toggle_btn.setChecked(bool(expanded))
+        expanded = bool(expanded)
+        self.toggle_btn.blockSignals(True)
+        self.toggle_btn.setChecked(expanded)
+        self.toggle_btn.blockSignals(False)
+        self._apply_expanded(expanded)
 
     def selected_interface(self) -> str:
         data = self.iface_combo.currentData()
@@ -346,8 +351,12 @@ class NetMonitorPanel(QFrame):
         self.iface_combo.blockSignals(False)
         self._monitor.set_interface(self.selected_interface() or None)
 
-    def _on_toggle_body(self, expanded: bool) -> None:
+    def _apply_expanded(self, expanded: bool) -> None:
         self.body.setVisible(expanded)
+        self.toggle_btn.setText("▼ 网络 / 磁盘" if expanded else "▶ 网络 / 磁盘")
+
+    def _on_toggle_body(self, expanded: bool) -> None:
+        self._apply_expanded(expanded)
         self.prefs_changed.emit()
 
     def _on_iface_changed(self, _index: int = 0) -> None:

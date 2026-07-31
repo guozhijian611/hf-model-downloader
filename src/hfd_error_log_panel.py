@@ -62,14 +62,15 @@ class HfdErrorLogPanel(QFrame):
         root.setSpacing(6)
 
         header = QHBoxLayout()
-        self.toggle_btn = QPushButton("▼ aria2 / hfd 错误日志")
+        self.toggle_btn = QPushButton("▶ aria2 / hfd 错误日志")
         self.toggle_btn.setFlat(True)
         self.toggle_btn.setCheckable(True)
-        self.toggle_btn.setChecked(True)
+        self.toggle_btn.setChecked(False)
         self.toggle_btn.setStyleSheet(
             "QPushButton { font-weight: 600; text-align: left; border: none; "
             "font-size: 13px; }"
         )
+        self.toggle_btn.setToolTip("点击展开/收起 aria2 错误日志")
         self.toggle_btn.toggled.connect(self._on_toggle)
         header.addWidget(self.toggle_btn)
 
@@ -141,6 +142,8 @@ class HfdErrorLogPanel(QFrame):
         )
         cl.addWidget(self.text)
         root.addWidget(self._content)
+        # Default collapsed (header stays visible).
+        self._content.setVisible(False)
 
         self._timer = QTimer(self)
         self._timer.setInterval(1000)
@@ -154,10 +157,14 @@ class HfdErrorLogPanel(QFrame):
         self.prefs_changed.emit()
 
     def set_expanded(self, expanded: bool) -> None:
+        expanded = bool(expanded)
         self.toggle_btn.blockSignals(True)
         self.toggle_btn.setChecked(expanded)
         self.toggle_btn.blockSignals(False)
-        self._on_toggle(expanded)
+        self.toggle_btn.setText(
+            "▼ aria2 / hfd 错误日志" if expanded else "▶ aria2 / hfd 错误日志"
+        )
+        self._content.setVisible(expanded)
 
     def set_watch_path(self, path: str | None) -> None:
         """``path`` is the model/dataset local directory (contains .hfd/)."""
